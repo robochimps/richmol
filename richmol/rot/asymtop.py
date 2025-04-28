@@ -9,8 +9,8 @@ from mendeleev import element
 from scipy import constants
 
 from .symmetry import SymmetryType
-from .units import UnitType
 from .symtop import rotme_rot, rotme_rot_diag
+from .units import UnitType
 
 jax.config.update("jax_enable_x64", True)
 
@@ -36,6 +36,7 @@ EPS = jnp.array(
 class RotStates:
     atom_masses: np.ndarray
     atom_xyz: np.ndarray
+    linear: bool
     j_list: list[int]
     sym_list: dict[int, list[str]]
     enr: defaultdict[int, defaultdict[str, np.ndarray]]
@@ -49,11 +50,6 @@ class RotStates:
         max_j: int,
         inp,
     ):
-        """Generates rigid-rotor rotational states of a molecule using its geometry as input.
-        Args:
-            max_j (int): max value of rotational J quantum number. States for J=0..`max_j` will be generated.
-            inp (list): input list
-        """
         print("\nCompute rigid-rotor solutions using molecular geometry as input")
 
         atom_labels, atom_xyz, atom_masses, units, sym_label = _parse_input(inp)
@@ -136,7 +132,7 @@ class RotStates:
                     enr[j][irrep] = e
                     vec[j][irrep] = v
                     r_ind[j][irrep] = ind
-                    v_ind[j][irrep] = np.array([0])
+                    v_ind[j][irrep] = np.array([0] * len(ind))
                     sym_list[j].append(irrep)
 
         # print solutions
@@ -161,7 +157,7 @@ class RotStates:
                         f"{v[ind, i] ** 2:10.5f}"
                     )
 
-        return cls(masses, xyz, j_list, sym_list, enr, vec, r_ind, v_ind)
+        return cls(masses, xyz, linear, j_list, sym_list, enr, vec, r_ind, v_ind)
 
 
 def _gmat(masses, xyz):
@@ -244,7 +240,7 @@ def _atom_mass(atom_label: str) -> float:
 
 def _parse_input(inp):
     unit = "angstrom"
-    symmetry = None
+    symmetry = "c1"
     atom_labels = []
     atom_coords = []
     atom_masses = []

@@ -33,7 +33,7 @@ class C1(MetaSymmetry):
 
 @register
 class C2v(MetaSymmetry):
-    irreps = ["A1", "B1", "B2", "A2"]
+    irreps = ["A1", "A2", "B1", "B2"]
 
     @staticmethod
     def irrep_from_k_tau(k: int, tau: Literal[0, 1]) -> str:

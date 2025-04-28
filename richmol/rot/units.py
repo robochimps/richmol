@@ -1,9 +1,8 @@
 from enum import Enum
-from typing import Callable
 
 from scipy import constants
 
-_UNITS: dict[str, Callable] = {}
+_UNITS: dict[str, type] = {}
 
 
 def register(cls):
@@ -57,11 +56,3 @@ class UnitBaseEnum(Enum):
 UnitType = Enum(
     "UnitType", {name: cls for name, cls in _UNITS.items()}, type=UnitBaseEnum
 )
-
-if __name__ == "__main__":
-    print([elem for elem in _UNITS.items()])
-
-    print([elem.name for elem in UnitType])
-    # print(1/UnitType.bohr.to.angstrom)
-    # print(UnitType.angstrom.to.bohr)
-    # print(UnitType.bohr.value)

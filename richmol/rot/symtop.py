@@ -12,12 +12,17 @@ from .wigner import _jy_eig, wigner_D
 config.update("jax_enable_x64", True)
 
 
-def wang_coefs(j: int, linear: bool, sym: SymmetryType):
+def wang_coefs(j: int, linear: bool, sym: SymmetryType | None = None):
+    if sym is None:
+        irrep_from_k_tau = lambda k, t: ""
+    else:
+        irrep_from_k_tau = sym.irrep_from_k_tau
+
     k_list = [k for k in range(-j, j + 1)]
     if linear:
         k = 0
         t = cast(Literal[0, 1], j % 2)
-        s = sym.irrep_from_k_tau(k, t)
+        s = irrep_from_k_tau(k, t)
         jktau_list = [(j, k, t, s)]
     else:
         jktau_list = []
@@ -27,7 +32,7 @@ def wang_coefs(j: int, linear: bool, sym: SymmetryType):
             else:
                 tau = [0, 1]
             for t in tau:
-                s = sym.irrep_from_k_tau(k, t)
+                s = irrep_from_k_tau(k, t)
                 jktau_list.append((j, k, t, s))
 
     coefs = np.zeros((len(k_list), len(jktau_list)), dtype=np.complex128)
