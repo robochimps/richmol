@@ -50,6 +50,46 @@ class RotStates:
         max_j: int,
         inp,
     ):
+        """Computes rigid rotor states from a given molecular geometry.
+
+        Args:
+            max_j (int):
+                Maximum rotational angular momentum quantum number (J).
+                Rotational states will be computed for all values from J = 0 up to J = max_j.
+            inp (list or tuple):
+                A specification of the molecular geometry, including atomic positions, units,
+                optional mass assignments, and symmetry labels. Examples are shown below.
+
+        Examples of 'inp':
+
+        1. Standard geometry specification:
+
+            >>> xyz = (
+            ...     "bohr", "c2v",
+            ...     "O", 0.00000000, 0.00000000, 0.12395915,
+            ...     "H", 0.00000000, -1.43102686, -0.98366080,
+            ...     "H", 0.00000000,  1.43102686, -0.98366080,
+            ... )
+
+        2. Custom atomic mass specification to override default atomic masses:
+
+            >>> xyz = (
+            ...     "bohr", "c2v",
+            ...     "O", 0.00000000, 0.00000000, 0.12395915, "m=13.024815",  # custom mass for "O"
+            ...     "H", 0.00000000, -1.43102686, -0.98366080,
+            ...     "H", 0.00000000,  1.43102686, -0.98366080,
+            ... )
+
+        3. Isotope specification by element label:
+
+            >>> xyz = (
+            ...     "bohr", "c2v",
+            ...     "O13", 0.00000000, 0.00000000, 0.12395915,  # oxygen-13 isotope
+            ...     "H", 0.00000000, -1.43102686, -0.98366080,
+            ...     "H", 0.00000000,  1.43102686, -0.98366080,
+            ... )
+
+        """
         print("\nCompute rigid-rotor solutions using molecular geometry as input")
 
         atom_labels, atom_xyz, atom_masses, units, sym_label = _parse_input(inp)
@@ -245,6 +285,13 @@ def _parse_input(inp):
     atom_coords = []
     atom_masses = []
 
+    avail_units = [elem.name for elem in UnitType]
+    avail_sym = [elem.name for elem in SymmetryType]
+    assert unit in avail_units, f"Default unit '{unit}' is not supported by {UnitType}"
+    assert (
+        symmetry in avail_sym
+    ), f"Default symmetry '{symmetry}' is not supported by {SymmetryType}"
+
     ielem = 0
     while ielem < len(inp):
         item = inp[ielem]
@@ -253,16 +300,22 @@ def _parse_input(inp):
             lower_item = item.lower()
 
             # unit
-            if lower_item in {"bohr", "angstrom", "pm"}:
+            if lower_item in avail_units:
                 unit = lower_item
                 ielem += 1
                 continue
 
-            # symmetry, "sym="
-            if lower_item.startswith("sym="):
-                symmetry = lower_item.split("=")[1]
+            # symmetry
+            if lower_item in avail_sym:
+                symmetry = lower_item
                 ielem += 1
                 continue
+
+            # symmetry, "sym="
+            # if lower_item.startswith("sym="):
+            #     symmetry = lower_item.split("=")[1]
+            #     ielem += 1
+            #     continue
 
             # atom label
             label = item

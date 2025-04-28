@@ -178,7 +178,18 @@ class CartTensor:
         self.mmat = self.m_tens(states)
 
     def m_tens(self, states):
-        r"""Computes M-tensor matrix elements:"""
+        r"""Computes M-tensor matrix elements:
+
+        M_{A,\omega}^{(J',m',J,m)} = \sqrt{(2J'+1)(2J+1)} (-1)^{m'}
+            \sum_{\sigma=-\omega}^{\omega}
+            threej(J, \omega, J', m, \sigma, -m')
+            [U^{(\Omega)}]^{-1}_{A,\omega\sigma}
+
+        Here,
+        - \omega = 0..\Omega (rank of tensor),
+        - A = X, Y, Z for \Omega=1, XX, XY, XZ, YX, YY, ... ZZ for \Omega=2,
+        - [U^{(\Omega)}]^{-1} is spherical-to-Cartesian tensor transformation matrix,
+        """
         m_me = {}
         for j1 in states.j_list:
             for j2 in states.j_list:
@@ -200,8 +211,8 @@ class CartTensor:
 
         Here,
         - c_{k,v}^{(l)} are expansion coefficients of rovibrational wavefunctions,
-        - \omega = 0..rank of tensor,
-        - \alpha = x, y, z for rank=1, xx, xy, xz, yx, yy, ... zz for rank=2,
+        - \omega = 0..\Omega (rank of tensor),
+        - \alpha = x, y, z for \Omega=1, xx, xy, xz, yx, yy, ... zz for \Omega=2,
         - U is Cartesian-to-spherical tensor transformation matrix,
         - T_{\alpha} are elements of tensor in molecular frame.
         """
