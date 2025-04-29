@@ -2,15 +2,15 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from typing import List, Literal, Type
 
-_SYMMETRIES: dict[str, Type["MetaSymmetry"]] = {}
+_SYMMETRIES: dict[str, Type["Symmetry"]] = {}
 
 
-def register(cls: Type["MetaSymmetry"]) -> Type["MetaSymmetry"]:
+def register(cls: Type["Symmetry"]) -> Type["Symmetry"]:
     _SYMMETRIES[cls.__name__.lower()] = cls
     return cls
 
 
-class MetaSymmetry(ABC):
+class Symmetry(ABC):
     irreps: List[str]
 
     @staticmethod
@@ -23,7 +23,7 @@ class MetaSymmetry(ABC):
 
 
 @register
-class C1(MetaSymmetry):
+class C1(Symmetry):
     irreps = ["A"]
 
     @staticmethod
@@ -32,7 +32,7 @@ class C1(MetaSymmetry):
 
 
 @register
-class C2v(MetaSymmetry):
+class C2v(Symmetry):
     irreps = ["A1", "A2", "B1", "B2"]
 
     @staticmethod
@@ -42,7 +42,7 @@ class C2v(MetaSymmetry):
 
 
 @register
-class D2h(MetaSymmetry):
+class D2(Symmetry):
     # ! TODO
     @staticmethod
     def irrep_from_k_tau(k: int, tau: Literal[0, 1]) -> str:
