@@ -1,39 +1,17 @@
 """Matrix elements of nuclear spin operators"""
 
 import itertools
-from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
+from typing import Literal
 
 import numpy as np
 import py3nj
 
-_OPERATORS: dict[str, type] = {}
-
-
-def register(cls):
-    name = cls.name
-    if name in _OPERATORS:
-        raise ValueError(
-            f"Class {_OPERATORS[name].__name__} and {cls.__name__} have the same name: {cls.name}"
-        )
-    _OPERATORS[name] = cls
-    return cls
-
-
-class SpinOperator(ABC):
-    name: str
-    rank: int
-
-    @abstractmethod
-    def reduced_me(self, tol: float = 1e-12) -> float:
-        pass
-
 
 @dataclass
-@register
-class Spin(SpinOperator):
+class Spin:
     """Defines nuclear spin operator I.
 
     Attributes:
@@ -56,6 +34,7 @@ class Spin(SpinOperator):
                 -int(self.spin * 2),
                 0,
                 int(self.spin * 2),
+                ignore_invalid=True,
             )
             if abs(threej) < tol:
                 raise ValueError(
@@ -66,8 +45,7 @@ class Spin(SpinOperator):
 
 
 @dataclass
-@register
-class QuadMom(SpinOperator):
+class QuadMom:
     """Defines nuclear quadrupole moment operator Q.
 
     Attributes:
@@ -90,6 +68,7 @@ class QuadMom(SpinOperator):
             -int(self.spin * 2),
             0,
             int(self.spin * 2),
+            ignore_invalid=True,
         )
         if abs(threej) < tol and abs(self.eQ) < tol:
             return 0
@@ -118,15 +97,13 @@ class SpinOperBaseEnum(Enum):
         return self.value(*args, **kwargs)
 
 
-SpinOperType = Enum(
-    "SpinOperType",
-    {name: cls for name, cls in _OPERATORS.items()},
-    type=SpinOperBaseEnum,
-)
+class SpinOperType(SpinOperBaseEnum):
+    spin = Spin
+    quad = QuadMom
 
 
 def _reduced_me_rec(
-    I1: list[float], I2: list[float], opers: list[SpinOperator], ioper: int, n: int
+    I1: tuple[float], I2: tuple[float], opers: list[SpinOperType], ioper: int, n: int
 ) -> float:
     """Recursively computes reduced matrix element of a single-spin operator in coupled-spin basis"""
 
@@ -186,81 +163,96 @@ def _reduced_me_rec(
 
 
 def reduced_me(
-    I1_list: list[list[float]],
-    I2_list: list[list[float]],
-    opers: list[SpinOperator],
-) -> np.ndarray:
+    I1_list: list[tuple[float]],
+    I2_list: list[tuple[float]],
+    opers: list[SpinOperType],
+    tol: float = 1e-14,
+) -> dict[tuple[tuple[float], tuple[float]], np.ndarray]:
     """Computes reduced matrix elements of single-spin operators O(I_i) in a coupled-spin basis.
 
     Args:
-        I1_list (list[list[float]]):
+        I1_list (list[tuple[float]]):
             List of coupled spin quantum numbers for the bra states.
-            Each sublist corresponds to a basis vector and contains spins:
-                [I_{1}, I_{12}, ..., I_{1N}],
+            Each tuple corresponds to a basis vector and contains spins:
+                (I_{1}, I_{12}, ..., I_{1N}),
             where:
                 - I_{1} is the spin of operator 1,
                 - I_{12} is the total spin of operators 1 and 2,
                 - I_{1N} is the total spin of operators 1 through N.
 
-        I2_list (list[list[float]]):
+        I2_list (list[tuple[float]]):
             List of coupled spin quantum numbers for the ket states, structured similarly to `I1_list`.
 
-        opers (list[SpinOperator]):
+        opers (list[SpinOperType]):
             List of single-spin operators O(I_i) corresponding to the nuclear spins involved.
             Each operator defines an individual spin quantum number I_i.
 
+        tol (float, optional):
+            Numerical tolerance used to neglect near-zero matrix elements.
+            Defaults to 1e-14.
+
     Returns:
-        np.ndarray:
-            A 3D array of shape (len(I1_list), len(I2_list), len(opers))
-            containing the reduced matrix elements:
-                me[k, l, i] = <I1_list[k] || O(I_i) || I2_list[l]>
+        dict[tuple[tuple[float], tuple[float]], np.ndarray]:
+            A dictionary mapping pairs of coupled spin states to arrays of reduced matrix elements:
+                me[(I1_list[k], I2_list[l])][i] = <I1_list[k] || O(I_i) || I2_list[l]>
     """
-    me = np.zeros((len(I1_list), len(I2_list), len(opers)), dtype=np.float64)
-    for i in range(len(I1_list)):
-        for j in range(len(I2_list)):
-            for ioper in range(len(opers)):
-                me[i, j, ioper] = _reduced_me_rec(
-                    I1_list[i], I2_list[j], opers, ioper, len(opers) - 1
-                )
-    return me
+    rme = {}
+    for i1 in I1_list:
+        for i2 in I2_list:
+            me = np.array(
+                [
+                    _reduced_me_rec(i1, i2, opers, ioper, len(opers) - 1)
+                    for ioper in range(len(opers))
+                ]
+            )
+            if np.any(np.abs(me) > tol):
+                rme[(i1, i2)] = me
+    return rme
 
 
 def reduced_me_IxI(
-    I1_list: list[list[float]],
-    I2_list: list[list[float]],
-    I_list: list[list[float]],
-    opers: list[SpinOperator],
-) -> np.ndarray:
+    I1_list: list[tuple[float]],
+    I2_list: list[tuple[float]],
+    I_list: list[tuple[float]],
+    opers: list[SpinOperType],
+    rank: Literal[0, 1, 2],
+    tol: float = 1e-14,
+) -> dict[tuple[tuple[float], tuple[float]], np.ndarray]:
     """Computes reduced matrix elements of tensor product of single-spin operators
-    [O(I_i)^(1) x O(I_j)^(1)]^(rank) (where rank = 0, 1, 2) in a coupled-spin basis.
+    [O(I_i)^(1) x O(I_j)^(1)]^(rank) in a coupled-spin basis.
 
     Args:
-        I1_list (list[list[float]]):
+        I1_list (list[tuple[float]]):
             List of coupled spin quantum numbers for the bra states.
-            Each sublist corresponds to a basis vector and contains spins:
-                [I_{1}, I_{12}, ..., I_{1N}],
+            Each tuple corresponds to a basis vector and contains spins:
+                (I_{1}, I_{12}, ..., I_{1N}),
             where:
                 - I_{1} is the spin of operator 1,
                 - I_{12} is the total spin of operators 1 and 2,
                 - I_{1N} is the total spin of operators 1 through N.
 
-        I2_list (list[list[float]]):
+        I2_list (list[tuple[float]]):
             List of coupled spin quantum numbers for the ket states, structured similarly to `I1_list`.
 
         I_list (list[list[float]]):
             Complete list of coupled spin quantum numbers spanned by spin basis,
             structured similarly to `I1_list`.
 
-        opers (list[SpinOperator]):
+        opers (list[SpinOperType]):
             List of single-spin operators O(I_i) corresponding to the nuclear spins involved.
             Each operator defines an individual spin quantum number I_i.
 
+        rank (Literal[0, 1, 2]):
+            Desired rank of tensor product: 0, 1, or 2.
+
+        tol (float, optional):
+            Numerical tolerance used to neglect near-zero matrix elements.
+            Defaults to 1e-14.
+
     Returns:
-        np.ndarray:
-            A dictionary of 4D arrays of shape (len(I1_list), len(I2_list), len(opers), len(opers))
-            containing the reduced matrix elements:
-                me[rank][k, l, i,  j] = <I1_list[k] || [O(I_i)^(1) x O(I_j)^(1)]^(rank) || I2_list[l]>
-            The dictionary keys are integer product rank values 0, 1, 2.
+        dict[tuple[tuple[float], tuple[float]], np.ndarray]:
+            A dictionary mapping pairs of coupled spin states to arrays of reduced matrix elements:
+                me[(I1_list[k], I2_list[l])][i, j] = <I1_list[k] || [O(I_i)^(1) x O(I_j)^(1)]^(rank) || I2_list[l]>
     """
     assert all(
         elem in I_list for elem in I1_list
@@ -269,49 +261,53 @@ def reduced_me_IxI(
         elem in I_list for elem in I2_list
     ), f"Not all spin states in 'I2_list' = {I2_list} are contained in the basis 'I_list' = {I_list}"
 
-    rme1 = reduced_me(I1_list, I_list, opers)  # (n1, n, ioper)
-    rme2 = reduced_me(I_list, I2_list, opers)  # (n, n2, ioper)
+    rme1 = reduced_me(I1_list, I_list, opers)
+    rme2 = reduced_me(I_list, I2_list, opers)
 
-    me = {}
-    for rank in (0, 1, 2):
-        coef = np.zeros((len(I1_list), len(I2_list), len(I_list)), dtype=np.float64)
-
-        for i, q1 in enumerate(I1_list):
-            I1 = q1[-1]
-            for j, q2 in enumerate(I2_list):
-                I2 = q2[-1]
-                fac = I1 + I2 + rank
-                assert float(
-                    fac
-                ).is_integer(), f"Non-integer power in (-1)**f: (-1)**{fac}"
-                fac = int(fac)
-                fac = (-1) ** fac * np.sqrt(2 * rank + 1)
-                n = len(I_list)
-                coef[i, j, :] = fac * py3nj.wigner6j(
-                    [2] * n,
-                    [2] * n,
-                    [rank * 2] * n,
-                    [int(I2 * 2)] * n,
-                    [int(I1 * 2)] * n,
-                    [int(q[-1] * 2) for q in I_list],
+    rme = {}
+    for i1 in I1_list:
+        for i2 in I2_list:
+            fac = i1[-1] + i2[-1] + rank
+            assert float(fac).is_integer(), f"Non-integer power in (-1)**f: (-1)**{fac}"
+            fac = int(fac)
+            fac = (-1) ** fac * np.sqrt(2 * rank + 1)
+            n = len(I_list)
+            coef = fac * py3nj.wigner6j(
+                [2] * n,
+                [2] * n,
+                [rank * 2] * n,
+                [int(i2[-1] * 2)] * n,
+                [int(i1[-1] * 2)] * n,
+                [int(i[-1] * 2) for i in I_list],
+            )
+            try:
+                me = np.sum(
+                    [
+                        rme1[(i1, i)][:, None] * c * rme2[(i, i2)][None, :]
+                        for i, c in zip(I_list, coef)
+                    ],
+                    axis=0,
                 )
-        me[rank] = np.einsum("kli,lnj,knl->knij", rme1, rme2, coef)
-    return me
+            except KeyError:
+                continue
+            if np.any(np.abs(me) > tol):
+                rme[(i1, i2)] = me
+    return rme
 
 
-def near_equal_coupling(opers: list[SpinOperator]) -> list[list[float]]:
+def near_equal_coupling(opers: list[SpinOperType]) -> list[tuple[float]]:
     """Generates combinations of nuclear spin quanta following nearly-equal coupling scheme.
 
     Args:
-        opers (list[SpinOperator]):
+        opers (list[SpinOperType]):
             List of single-spin operators O(I_i) corresponding to the nuclear spins involved.
             Each operator defines an individual spin quantum number I_i.
 
     Returns:
-        (list[list[float]]):
+        (list[tuple[float]]):
             List of coupled nuclear spin quantum numbers for each basis state.
-            Each sublist represents sequential coupling:
-                [I_{1}, I_{12}, ..., I_{1N}],
+            Each tuple represents sequential coupling:
+                (I_{1}, I_{12}, ..., I_{1N}),
             where:
                 - I_{1} is the spin of operator 1,
                 - I_{12} is the total spin of operators 1 and 2,
@@ -328,32 +324,32 @@ def near_equal_coupling(opers: list[SpinOperator]) -> list[list[float]]:
                 I0 + [float(elem)]
                 for elem in np.arange(np.abs(I0[-1] - I), I0[-1] + I + 1)
             ]
-    return [list(elem) for elem in queue]
+    return [tuple(elem) for elem in queue]
 
 
 def near_equal_coupling_with_rotations(
-    f: float, opers: list[SpinOperator]
-) -> tuple[list[list[float]], list[int]]:
+    f: float, opers: list[SpinOperType]
+) -> tuple[list[tuple[float]], list[int]]:
     """Generates combinations of nuclear spin quantum numbers and rotational quantum numbers (J)
     that couple to a given total spin-rotational angular momentum quantum number (F),
     following a nearly-equal coupling scheme.
 
     Args:
         f (float):
-            Quantum number of the total angular momentum F = I + J, 
+            Quantum number of the total angular momentum F = I + J,
             where I is the total nuclear spin and J is the rotational angular momentum.
             Combinations will be generated such that they satisfy this total F.
 
-        opers (list[SpinOperator]):
+        opers (list[SpinOperType]):
             List of single-spin operators O(I_i) corresponding to the nuclear spins involved.
             Each operator defines an individual spin quantum number I_i.
 
     Returns:
         tuple:
-            - spin_quanta (list[list[float]]):
+            - spin_quanta (list[tuple[float]]):
                 List of coupled nuclear spin quantum numbers for each basis state.
-                Each sublist represents sequential coupling:
-                    [I_{1}, I_{12}, ..., I_{1N}],
+                Each tuple represents sequential coupling:
+                    (I_{1}, I_{12}, ..., I_{1N}),
                 where:
                     - I_{1} is the spin of operator 1,
                     - I_{12} is the total spin of operators 1 and 2,
@@ -403,16 +399,19 @@ if __name__ == "__main__":
     me = reduced_me(I_list, I_list, [op1, op2])
 
     print("matrix elements < || I_i || >")
-    for i in range(len(I_list)):
-        for j in range(len(I_list)):
-            for iop in range(2):
-                print(I_list[i], I_list[j], iop, me[i, j, iop])
+    for i1 in I_list:
+        for i2 in I_list:
+            try:
+                print(i1, i2, me[(i1, i2)])
+            except KeyError:
+                continue
 
-    me = reduced_me_IxI(I_list, I_list, I_list, [op1, op2])
+    me = reduced_me_IxI(I_list, I_list, I_list, [op1, op2], 2)
 
     print("matrix elements < || [I_i^(1) x I_j^(1)]^(2) || >")
-    for i in range(len(I_list)):
-        for j in range(len(I_list)):
-            for iop in range(2):
-                for jop in range(2):
-                    print(I_list[i], I_list[j], iop, jop, me[2][i, j, iop, jop])
+    for i1 in I_list:
+        for i2 in I_list:
+            try:
+                print(i1, i2, me[(i1, i2)])
+            except KeyError:
+                continue
