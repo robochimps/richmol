@@ -141,11 +141,16 @@ class Rank2Tensor:
 
 
 class CartTensor:
+    rank: int
+    cart_ind: list[str]
+    spher_ind: list[tuple[int, int]]
+    # kmat: dict[tuple[int, int], dict[tuple[str, str], np.ndarray]]
+    # mmat: dict[tuple[int, int], np.ndarray]
 
     def __init__(self, states: RotStates, mol_tens: np.ndarray, vib: bool = False):
         if not isinstance(mol_tens, np.ndarray):
             mol_tens = np.array(mol_tens)
-        if vib:
+        if vib:  # first two dimensions are vibrational quanta
             if mol_tens.ndim < 3:
                 raise ValueError(
                     f"Since 'vib' = {vib}, tensor 'mol_tens' must have at least 3 dimensions "
@@ -174,8 +179,10 @@ class CartTensor:
         else:
             raise ValueError(f"Cartesian tensor for rank = {rank} is not implemented")
 
-        self.kmat = self.k_tens(states)
-        self.mmat = self.m_tens(states)
+        self.kmat = self.k_tens(states)  # [(j1 ,j2)][(sym1, sym2)][omega, k1, k2]
+        self.mmat = self.m_tens(states)  # [(j1, j2)][omega, m1, m2, A]
+        self.j_list = states.j_list
+        self.sym_list = states.sym_list
 
     def m_tens(self, states):
         r"""Computes M-tensor matrix elements:
@@ -187,7 +194,7 @@ class CartTensor:
 
         Here,
         - \omega = 0..\Omega (rank of tensor),
-        - A = X, Y, Z for \Omega=1, XX, XY, XZ, YX, YY, ... ZZ for \Omega=2,
+        - A = X, Y, Z for \Omega=1, XX, XY, XZ, YX, YY, ... ZZ for \Omega=2, etc.
         - [U^{(\Omega)}]^{-1} is spherical-to-Cartesian tensor transformation matrix,
         """
         m_me = {}
@@ -195,8 +202,8 @@ class CartTensor:
             for j2 in states.j_list:
                 fac = np.sqrt(2 * j1 + 1) * np.sqrt(2 * j2 + 1)
                 m_list1, m_list2, rot_me = self._threej_umat_spher_to_cart(j1, j2)
-                m_me[(j1, j2)] = np.moveaxis(
-                    fac * np.array([rot_me[omega] for omega in rot_me.keys()]), 0, -1
+                m_me[(j1, j2)] = fac * np.array(
+                    [rot_me[omega] for omega in rot_me.keys()]
                 )
         return m_me
 
@@ -269,7 +276,7 @@ class CartTensor:
                                     optimize="optimal",
                                 )
                             )
-                        k_me[(j1, j2)][(sym1, sym2)] = np.moveaxis(np.array(me), 0, -1)
+                        k_me[(j1, j2)][(sym1, sym2)] = np.array(me)
         return k_me
 
     def _threej_umat_cart_to_spher(self, j1: int, j2: int, linear: bool):
@@ -333,7 +340,7 @@ class CartTensor:
             threej(J, \omega, J', m, \sigma, -m')
             [U^{(\Omega)}]^{-1}_{A,\omega\sigma}
 
-        Here, |j1, m'=-j1..j1\rangle are bra states, and |j2, m=-j2..j2\rangle are ket states.
+        Here, |j1, m'=-j1..j1> are bra states, and |j2, m=-j2..j2> are ket states.
         """
         m_list1 = np.arange(-j1, j1 + 1)
         m_list2 = np.arange(-j2, j2 + 1)

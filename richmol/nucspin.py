@@ -1,17 +1,27 @@
-"""Matrix elements of nuclear spin operators"""
-
 import itertools
+from abc import abstractmethod
+from typing import Protocol, runtime_checkable
 from collections import deque
 from dataclasses import dataclass
-from enum import Enum
 from typing import Literal
 
 import numpy as np
 import py3nj
 
 
+@runtime_checkable
+class SpinOperator(Protocol):
+    spin: float
+    name: str
+    rank: int
+
+    @abstractmethod
+    def reduced_me(self, tol: float = 1e-12) -> float:
+        pass
+
+
 @dataclass
-class Spin:
+class Spin(SpinOperator):
     """Defines nuclear spin operator I.
 
     Attributes:
@@ -45,17 +55,17 @@ class Spin:
 
 
 @dataclass
-class QuadMom:
+class QuadMom(SpinOperator):
     """Defines nuclear quadrupole moment operator Q.
 
     Attributes:
         spin (float): Integer or half-integer value of nuclear spin.
 
-        eQ (float): Nuclear quadrupole constant in units of millibarns (mb).
+        Q (float): Nuclear quadrupole constant in units of millibarns (mb).
     """
 
     spin: float
-    eQ: float
+    Q: float
     name: str = "quad"
     rank: int = 2
 
@@ -70,40 +80,22 @@ class QuadMom:
             int(self.spin * 2),
             ignore_invalid=True,
         )
-        if abs(threej) < tol and abs(self.eQ) < tol:
+        if abs(threej) < tol and abs(self.Q) < tol:
             return 0
-        elif abs(threej) < tol and abs(self.eQ) > tol:
+        elif abs(threej) < tol and abs(self.Q) > tol:
             assert int(self.spin * 2) > 1, (
                 f"For nucleus with spin = {self.spin}, the nuclear quadrupole moment must be zero, "
-                + f"instead value of eQ = {self.eQ} is provided"
+                + f"instead value of eQ = {self.Q} is provided"
             )
             raise ValueError(
-                f"Illegal division eQ/threej(I,2,I;-I,0,I): {self.eQ} / {threej}"
+                f"Illegal division eQ/threej(I,2,I;-I,0,I): {self.Q} / {threej}"
             ) from None
         else:
-            return 0.5 * self.eQ / threej
-
-
-class SpinOperBaseEnum(Enum):
-    def __getattr__(self, attr):
-        if attr in {"name", "value", "_name_", "_value_", "__class__"}:
-            raise AttributeError(
-                f"'{self.__class__.__name__}' object has no attribute '{attr}'"
-            )
-        value = object.__getattribute__(self, "value")
-        return getattr(value, attr)
-
-    def __call__(self, *args, **kwargs):
-        return self.value(*args, **kwargs)
-
-
-class SpinOperType(SpinOperBaseEnum):
-    spin = Spin
-    quad = QuadMom
+            return 0.5 * self.Q / threej
 
 
 def _reduced_me_rec(
-    I1: tuple[float], I2: tuple[float], opers: list[SpinOperType], ioper: int, n: int
+    I1: tuple[float], I2: tuple[float], opers: list[SpinOperator], ioper: int, n: int
 ) -> float:
     """Recursively computes reduced matrix element of a single-spin operator in coupled-spin basis"""
 
@@ -165,7 +157,7 @@ def _reduced_me_rec(
 def reduced_me(
     I1_list: list[tuple[float]],
     I2_list: list[tuple[float]],
-    opers: list[SpinOperType],
+    opers: list[SpinOperator],
     tol: float = 1e-14,
 ) -> dict[tuple[tuple[float], tuple[float]], np.ndarray]:
     """Computes reduced matrix elements of single-spin operators O(I_i) in a coupled-spin basis.
@@ -183,7 +175,7 @@ def reduced_me(
         I2_list (list[tuple[float]]):
             List of coupled spin quantum numbers for the ket states, structured similarly to `I1_list`.
 
-        opers (list[SpinOperType]):
+        opers (list[SpinOperator]):
             List of single-spin operators O(I_i) corresponding to the nuclear spins involved.
             Each operator defines an individual spin quantum number I_i.
 
@@ -214,7 +206,7 @@ def reduced_me_IxI(
     I1_list: list[tuple[float]],
     I2_list: list[tuple[float]],
     I_list: list[tuple[float]],
-    opers: list[SpinOperType],
+    opers: list[SpinOperator],
     rank: Literal[0, 1, 2],
     tol: float = 1e-14,
 ) -> dict[tuple[tuple[float], tuple[float]], np.ndarray]:
@@ -238,7 +230,7 @@ def reduced_me_IxI(
             Complete list of coupled spin quantum numbers spanned by spin basis,
             structured similarly to `I1_list`.
 
-        opers (list[SpinOperType]):
+        opers (list[SpinOperator]):
             List of single-spin operators O(I_i) corresponding to the nuclear spins involved.
             Each operator defines an individual spin quantum number I_i.
 
@@ -295,11 +287,11 @@ def reduced_me_IxI(
     return rme
 
 
-def near_equal_coupling(opers: list[SpinOperType]) -> list[tuple[float]]:
+def near_equal_coupling(opers: list[SpinOperator]) -> list[tuple[float]]:
     """Generates combinations of nuclear spin quanta following nearly-equal coupling scheme.
 
     Args:
-        opers (list[SpinOperType]):
+        opers (list[SpinOperator]):
             List of single-spin operators O(I_i) corresponding to the nuclear spins involved.
             Each operator defines an individual spin quantum number I_i.
 
@@ -328,19 +320,19 @@ def near_equal_coupling(opers: list[SpinOperType]) -> list[tuple[float]]:
 
 
 def near_equal_coupling_with_rotations(
-    f: float, opers: list[SpinOperType]
+    f_val: float, opers: list[SpinOperator]
 ) -> tuple[list[tuple[float]], list[int]]:
     """Generates combinations of nuclear spin quantum numbers and rotational quantum numbers (J)
     that couple to a given total spin-rotational angular momentum quantum number (F),
     following a nearly-equal coupling scheme.
 
     Args:
-        f (float):
+        f_val (float):
             Quantum number of the total angular momentum F = I + J,
             where I is the total nuclear spin and J is the rotational angular momentum.
             Combinations will be generated such that they satisfy this total F.
 
-        opers (list[SpinOperType]):
+        opers (list[SpinOperator]):
             List of single-spin operators O(I_i) corresponding to the nuclear spins involved.
             Each operator defines an individual spin quantum number I_i.
 
@@ -365,7 +357,7 @@ def near_equal_coupling_with_rotations(
             [
                 float(elem)
                 for spin in I_list
-                for elem in np.arange(abs(f - spin[-1]), f + spin[-1] + 1)
+                for elem in np.arange(abs(f_val - spin[-1]), f_val + spin[-1] + 1)
             ]
         )
     )
@@ -374,13 +366,13 @@ def near_equal_coupling_with_rotations(
         spins = [oper.spin for oper in opers]
         raise ValueError(
             f"Invalid rotational quantum numbers J: {J_list}. "
-            f"For spins {spins} and total F = {f}, non-integer values of J are produced."
+            f"For spins {spins} and total F = {f_val}, non-integer values of J are produced."
         ) from None
 
     quanta = [
         (spin, j)
         for (spin, j) in itertools.product(I_list, J_list)
-        if any(np.arange(np.abs(spin[-1] - j), spin[-1] + j + 1) == f)
+        if any(np.arange(np.abs(spin[-1] - j), spin[-1] + j + 1) == f_val)
     ]
     spin_quanta = [elem[0] for elem in quanta]
     rot_quanta = [int(elem[1]) for elem in quanta]
@@ -391,8 +383,8 @@ if __name__ == "__main__":
 
     # example of reduced matrix elements for two spins 1/2
 
-    op1 = SpinOperType.spin(spin=1 / 2)
-    op2 = SpinOperType.spin(spin=1 / 2)
+    op1 = Spin(spin=1 / 2)
+    op2 = Spin(spin=1 / 2)
 
     I_list = near_equal_coupling([op1, op2])
 

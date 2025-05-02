@@ -2,15 +2,15 @@ from enum import Enum
 
 from scipy import constants
 
-_UNITS: dict[str, type] = {}
+# _UNITS: dict[str, type] = {}
 
 
-def register(cls):
-    _UNITS[cls.__name__.lower()] = cls
-    return cls
+# def register(cls):
+#     _UNITS[cls.__name__.lower()] = cls
+#     return cls
 
 
-@register
+# @register
 class angstrom:
     @staticmethod
     def to(unit: str):
@@ -24,7 +24,7 @@ class angstrom:
             raise ValueError(f"Unit '{unit}' is unknown")
 
 
-@register
+# @register
 class bohr:
     @staticmethod
     def to(unit: str):
@@ -53,6 +53,11 @@ class UnitBaseEnum(Enum):
         return ToProxy(self.value)
 
 
-UnitType = Enum(
-    "UnitType", {name: cls for name, cls in _UNITS.items()}, type=UnitBaseEnum
-)
+# UnitType = Enum(
+#     "UnitType", {name: cls for name, cls in _UNITS.items()}, type=UnitBaseEnum
+# )
+
+
+class UnitType(UnitBaseEnum):
+    angstrom = angstrom
+    bohr = bohr

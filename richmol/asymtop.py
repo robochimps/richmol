@@ -104,7 +104,7 @@ class RotStates:
             units = [elem for elem in UnitType][i]
         except ValueError:
             raise ValueError(
-                f"No units '{units}' found {[elem.name for name in UnitType]}"
+                f"No units '{units}' found {[elem.name for elem in UnitType]}"
             ) from None
 
         print(
