@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 import numpy as np
 import py3nj
 from scipy import constants
@@ -18,6 +20,227 @@ joul_to_invcm = 1 / (
     * constants.value("speed of light in vacuum")
 )
 EFG_X_QUAD_INVCM = efg_x_quad_joul * joul_to_invcm
+
+
+def _symmetry_spin_rotation_placeholder(
+    j_list: list[int],
+    j_sym_list: dict[int, list[str]],
+    spin_list: list[tuple[float]],
+):
+    sym_list = list(
+        set([sym for sym_list in list(j_sym_list.values()) for sym in sym_list])
+    )
+    assert sym_list == ["A"], (
+        "The placeholder spin-rotation symmetrization function works only for C1 spatial symmetry group,\n"
+        + f"i.e., no symmetry, instead got spatial symmetries: {sym_list}"
+    )
+    j_spin_list = {}
+    for j, spin in zip(j_list, spin_list):
+        for j_sym in j_sym_list[j]:
+            ##########
+            # f_sym = ... # code symmetry spin-spatial symmetry products
+            f_sym = j_sym
+            spin_sym = "A"
+            ##########
+            try:
+                j_spin_list[f_sym].append((j, spin, j_sym, spin_sym))
+            except KeyError:
+                j_spin_list[f_sym] = [(j, spin, j_sym, spin_sym)]
+    return j_spin_list
+
+
+class HyperStates:
+
+    def __init__(
+        self,
+        min_f: float,
+        max_f: float,
+        states: RotStates,
+        spin_op: list[SpinOperator],
+        efg_op: list[CartTensor | None] = [],
+    ):
+        """ """
+        print("\nCompute hyperfine states")
+
+        assert min_f <= max_f, f"'min_f'> 'max_f': {min_f} > {max_f}"
+        assert len(spin_op) > 0, f"'spin_op' is empty"
+
+        # check input for quadrupole
+
+        quad_op_ind = []  # elements of `spin_op` and `efg_op` for quadrupole coupling
+
+        if len(efg_op) > 0:
+            if len(efg_op) != len(spin_op):
+                raise ValueError(
+                    f"'efg_op' and 'spin_op' must have the same number of elements,"
+                    f"len(efg_op) = {len(efg_op)}, len(spin_op) = {len(spin_op)}"
+                )
+
+            for i, efg in enumerate(efg_op):
+                if efg is not None:
+                    if not hasattr(spin_op[i], "Q"):
+                        raise ValueError(
+                            f"EFG tensor in 'efg_op[{i}]' is provided (non-None),\n"
+                            f"but the corresponding spin operator in 'spin_op[{i}]' "
+                            + "lacks a quadrupole moment ('Q' attribute).\n"
+                        )
+
+                    if not efg.spher_ind == Rank2Tensor().spher_ind:
+                        raise ValueError(
+                            f"EFG tensor in 'efg_op[{i}]' has invalid attribute 'spher_ind': {efg.spher_ind}, "
+                            + f"expected: {Rank2Tensor.spher_ind}"
+                        ) from None
+
+                    quad_op_ind.append(i)
+
+        # generate combinations of rovibrational and spin angular momentum quantum numbers
+
+        self.f_list = [
+            round(f) for f in np.linspace(min_f, max_f, int(max_f - min_f) + 1)
+        ]
+        print(f"List of F quanta: {self.f_list}")
+
+        self.j_spin_list = {}
+        self.f_sym_list = {}
+
+        for f in self.f_list:
+            spin_list, j_list = near_equal_coupling_with_rotations(f, spin_op)
+            j_sym_list = states.sym_list
+            j_spin_list = _symmetry_spin_rotation_placeholder(
+                j_list, j_sym_list, spin_list
+            )
+            self.f_sym_list[f] = list(j_spin_list.keys())
+
+            # add dimension of the rovibrational basis to the list
+            # i.e., (J, spin, J sym, spin sym) -> (J, spin, J sym, spin sym, J dim)
+            self.j_spin_list[f] = {
+                f_sym: [
+                    (j, spin, j_sym, spin_sym, len(states.enr[j][j_sym]))
+                    for (j, spin, j_sym, spin_sym) in j_spin_list[f_sym]
+                ]
+                for f_sym in self.f_sym_list[f]
+            }
+
+        # print quantum numbers
+
+        print(
+            f"{'F':<3} {'tot.sym.':<10} {'J':<3} {'(I_1, I_12, ... I_1N)':<25} "
+            + f"{'rovib.sym.':<12} {'spin.sym.':<10} {'rovib.dim':<10}"
+        )
+        print("-" * 76)
+
+        for f in self.f_list:
+            for f_sym in self.f_sym_list[f]:
+                for j, spin, j_sym, spin_sym, j_dim in self.j_spin_list[f][f_sym]:
+                    spin_str = (
+                        "("
+                        + ", ".join(f"{s:.1f}" if s % 1 else f"{int(s)}" for s in spin)
+                        + ")"
+                    )
+                    print(
+                        f"{f:<3} {f_sym:<10} {j:<3} {spin_str:<25} "
+                        + f"{j_sym:<12} {spin_sym:<10} {j_dim:<10}"
+                    )
+
+        # solve hyperfine problem for different F and symmetries
+
+        for f in self.f_list:
+            for sym in self.f_sym_list[f]:
+
+                print(f"solve for F = {f} and symmetry {sym} ...")
+
+                nested_dict = lambda: defaultdict(nested_dict)
+                self.enr0 = nested_dict()
+                self.enr = nested_dict()
+                self.vec = nested_dict()
+
+                # pure rovibrational Hamiltonian
+
+                self.enr0[f][sym] = np.concatenate(
+                    [
+                        states.enr[j][j_sym]
+                        for (j, spin, j_sym, *_) in self.j_spin_list[f][sym]
+                    ]
+                )
+
+                h = np.diag(self.enr0[f][sym])
+
+                # add quadrupole interaction Hamiltonian
+
+                if len(quad_op_ind) > 0:
+                    print("add quadrupole")
+                    h = h + _quadrupole_me(
+                        f,
+                        self.j_spin_list[f][sym],
+                        [spin_op[i] for i in quad_op_ind],
+                        [efg_op[i] for i in quad_op_ind],
+                    )
+
+                # diagonalization
+
+                self.enr[f][sym], self.vec[f][sym] = np.linalg.eigh(h)
+
+
+def _quadrupole_me(
+    f_val: float,
+    j_spin_list: list[tuple[int, tuple[float], str, str, int]],
+    quad_op: list[SpinOperator],
+    efg_op: list[CartTensor],
+):
+    spin_list = [spin for (_, spin, *_) in j_spin_list]
+
+    # <I' || Q(i) || I>
+    quad_me = reduced_me(spin_list, spin_list, quad_op)
+
+    h = []
+    for j1, spin1, j_sym1, spin_sym1, j_dim1 in j_spin_list:
+        h_ = []
+        for j2, spin2, j_sym2, spin_sym2, j_dim2 in j_spin_list:
+
+            zero_block = np.zeros((j_dim1, j_dim2))
+
+            try:
+                quad = quad_me[(spin1, spin2)]
+            except KeyError:
+                h_.append(zero_block)
+                continue
+
+            me = 0
+            for efg, q in zip(efg_op, quad):
+                try:
+                    kmat = efg.kmat[(j1, j2)][(j_sym1, j_sym2)]
+                except KeyError:
+                    continue
+                me += kmat[2] * q
+
+            if isinstance(me, int) and me == 0:
+                h_.append(zero_block)
+                continue
+
+            fac = spin1[-1] + f_val
+            assert float(fac).is_integer(), f"Non-integer power in (-1)**f: (-1)**{fac}"
+            fac = int(fac)
+            prefac = (
+                (-1) ** fac
+                / np.sqrt(6)
+                * np.sqrt((2 * j1 + 1) * (2 * j2 + 1))
+                * py3nj.wigner6j(
+                    int(f_val * 2),
+                    int(spin1[-1] * 2),
+                    j1 * 2,
+                    2 * 2,
+                    j2 * 2,
+                    int(spin2[-1] * 2),
+                    ignore_invalid=True,
+                )
+            )
+
+            me_cm = prefac * me * EFG_X_QUAD_INVCM
+            h_.append(me_cm)
+
+        h.append(h_)
+    h = np.block(h)
+    return h
 
 
 def quadrupole_me(
@@ -63,7 +286,6 @@ def quadrupole_me(
             - h0 (np.ndarray):
                 Diagonal matrix of pure rovibrational energies (in cm⁻¹),
                 without quadrupole interaction.
-
             - h (np.ndarray):
                 Matrix of quadrupole Hamiltonian matrix elements (in cm⁻¹),
                 without pure rovibrational part.
@@ -203,3 +425,82 @@ def quadrupole_me(
     )
 
     return spin_list, j_list, h0, h
+
+
+class HyperCartTensor:
+    rank: int
+
+    def __init__(self, states: HyperStates, cart_tens: CartTensor):
+        pass
+
+    def k(self, f1, f2, sym1, sym2, kmat):
+
+        me = []
+        for j1, j_sym1, spin1, spin_sym1 in states.j_spin_list[f1][sym1]:
+            me_ = []
+            for j2, j_sym2, spin2, spin_sym2 in states.j_spin_list[f2][sym2]:
+
+                if (
+                    spin1 != spin2
+                    or (j1, j2) not in kmat
+                    or (sym1, sym2) not in kmat[(j1, j2)]
+                ):
+                    me_.append(np.zeros((dim1, dim2)))
+
+                fac = j1 * spin2[-1] + f2 + j2
+                assert float(
+                    fac
+                ).is_integer(), f"Non-integer power in (-1)**f: (-1)**{fac}"
+                fac = int(fac)
+                prefac = (
+                    (-1) ** fac
+                    * np.sqrt((2 * j1 + 1) * (2 * j2 + 1))
+                    * py3nj.wigner6j(
+                        j1 * 2,
+                        int(f1 * 2),
+                        int(spin2[-1] * 2),
+                        int(f2 * 2),
+                        j2 * 2,
+                        self.rank * 2,
+                        ignore_invalid=True,
+                    )
+                )
+                me_.append(kmat[(j1, j2)][(j_sym1, j_sym2)] * prefac)  # (omega, l1, l2)
+            me.append(me)
+        me = np.block(me)
+
+    def k_tens(self, states, tens):
+
+        for f1 in states.f_list:
+            for f2 in states.f_list:
+                for sym1 in states.sym_list[f1]:
+                    vec1 = states.vec[f1][sym1]
+
+                    for sym2 in states.sym_list[f2]:
+                        vec2 = states.vec[f2][sym2]
+
+                for j1, spin1 in zip(states.j_list[f1], states.spin_list[f1]):
+                    for j2, spin2 in zip(states.j_list[f2], states.spin_list[f2]):
+
+                        if spin1 != spin2:
+                            continue
+
+                        fac = j1 * spin2[-1] + f2 + j2
+                        assert float(
+                            fac
+                        ).is_integer(), f"Non-integer power in (-1)**f: (-1)**{fac}"
+                        fac = int(fac)
+                        prefac = (
+                            (-1) ** fac
+                            * np.sqrt((2 * j1 + 1) * (2 * j2 + 1))
+                            * py3nj.wigner6j(
+                                j1 * 2,
+                                int(f1 * 2),
+                                int(spin2[-1] * 2),
+                                int(f2 * 2),
+                                j2 * 2,
+                                tens.rank * 2,
+                                ignore_invalid=True,
+                            )
+                        )
+                        # tens.kmat[(j1, j2)]
