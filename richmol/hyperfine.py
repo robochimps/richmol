@@ -50,6 +50,33 @@ def _symmetry_spin_rotation_placeholder(
 
 
 class HyperStates:
+    """Computes hyperfine states using molecular rovibrational states
+    and rovibrational matrix elements of electric and magnetic spin
+    interaction tensors.
+
+    Args:
+        min_f (float):
+            Minimal total angular momentum quantum number F = I + J,
+            where I is the total nuclear spin and J is the rotational
+            angular momentum.
+
+        max_f (float):
+            Minimal total angular momentum quantum number F = I + J.
+
+        states (RotStates):
+            Molecular rotational or rovibrational energy states
+            used as the basis for hyperfine calculations.
+
+        spin_op (list[SpinOperator]):
+            List of nuclear spin operators for each coupled nucleus.
+
+        efg_op (list[CartTensor | None], optional):
+            List of electric field gradient tensors corresponding
+            to each spin operator in `spin_op`.
+            For non-quadrupolar nuclei, set the corresponding entry to `None`.
+            Each EFG tensor must be in atomic units.
+            Defaults to an empty list, meaning quadrupole interactions are excluded.
+    """
 
     def __init__(
         self,
@@ -59,7 +86,6 @@ class HyperStates:
         spin_op: list[SpinOperator],
         efg_op: list[CartTensor | None] = [],
     ):
-        """ """
         print("\nCompute hyperfine states")
 
         assert min_f <= max_f, f"'min_f'> 'max_f': {min_f} > {max_f}"
