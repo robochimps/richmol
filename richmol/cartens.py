@@ -333,7 +333,9 @@ class CartTensor:
             )
         return jktau_list1, jktau_list2, threej_wang
 
-    def _threej_umat_spher_to_cart(self, j1: int, j2: int):
+    def _threej_umat_spher_to_cart(
+        self, j1: int | float, j2: int | float, hyperfine: bool = False
+    ):
         r"""Computes three-j symbol contracted with tensor's spherical-to-Cartesian transformation,
 
         (-1)^{m'} \sum_{\sigma=-\omega}^{\omega}
@@ -362,13 +364,20 @@ class CartTensor:
             for omega in self.umat_spher_to_cart.keys()
         }
         for omega, sigma in self.spher_ind:
-            thrj = (-1) ** np.abs(m12_1) * wigner3j(
-                [j2 * 2] * n,
+            if hyperfine:
+                fac = np.abs(m12_1 - j2 - omega)
+            else:
+                fac = np.abs(m12_1)
+            assert float(fac).is_integer(), f"Non-integer power in (-1)**f: (-1)**{fac}"
+            fac = int(fac)
+
+            thrj = (-1) ** fac * wigner3j(
+                [int(j2 * 2)] * n,
                 [omega * 2] * n,
-                [j1 * 2] * n,
+                [int(j1 * 2)] * n,
                 m12_2 * 2,
                 [sigma * 2] * n,
-                -m12_1 * 2,
+                -int(m12_1 * 2),
                 ignore_invalid=True,
             )
             threej[omega][sigma + omega] = thrj.reshape(len(m1), len(m2))

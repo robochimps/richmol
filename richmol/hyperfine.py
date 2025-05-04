@@ -170,15 +170,15 @@ class HyperStates:
 
         # solve hyperfine problem for different F and symmetries
 
+        nested_dict = lambda: defaultdict(nested_dict)
+        self.enr0 = nested_dict()
+        self.enr = nested_dict()
+        self.vec = nested_dict()
+
         for f in self.f_list:
             for sym in self.f_sym_list[f]:
 
                 print(f"solve for F = {f} and symmetry {sym} ...")
-
-                nested_dict = lambda: defaultdict(nested_dict)
-                self.enr0 = nested_dict()
-                self.enr = nested_dict()
-                self.vec = nested_dict()
 
                 # pure rovibrational Hamiltonian
 
@@ -455,25 +455,69 @@ def quadrupole_me(
 
 class HyperCartTensor:
     rank: int
+    kmat: defaultdict[tuple[float, float], defaultdict[tuple[str, str], np.ndarray]]
+    mmat: dict[tuple[float, float], np.ndarray]
 
     def __init__(self, states: HyperStates, cart_tens: CartTensor):
-        pass
+        self.kmat = self.k_tens(states, cart_tens)
+        self.mmat = self.m_tens(states, cart_tens)
+        self.rank = cart_tens.rank
+        self.f_list = states.f_list
+        self.f_sym_list = states.f_sym_list
+        self.j_spin_list = states.j_spin_list
 
-    def k(self, f1, f2, sym1, sym2, kmat):
+    def k_tens(self, states, cart_tens):
+        nested_dict = lambda: defaultdict(nested_dict)
+        k_me = nested_dict()
 
-        me = []
-        for j1, j_sym1, spin1, spin_sym1 in states.j_spin_list[f1][sym1]:
-            me_ = []
-            for j2, j_sym2, spin2, spin_sym2 in states.j_spin_list[f2][sym2]:
+        for f1 in states.f_list:
+            for f2 in states.f_list:
+                for sym1 in states.f_sym_list[f1]:
+                    for sym2 in states.f_sym_list[f2]:
+                        me = self._k_me(
+                            f1,
+                            f2,
+                            states.j_spin_list[f1][sym1],
+                            states.j_spin_list[f2][sym2],
+                            cart_tens.rank,
+                            cart_tens.kmat,
+                        )
+
+                        v1 = states.vec[f1][sym1]
+                        v2 = states.vec[f2][sym2]
+
+                        k_me[(f1, f2)][(sym1, sym2)] = np.einsum(
+                            "ik,oij,jl->okl", np.conj(v1), me, v2, optimize="optimal"
+                        )
+        return k_me
+
+    def m_tens(self, states, cart_tens):
+        m_me = {}
+        for f1 in states.f_list:
+            for f2 in states.f_list:
+                m_list1, m_list2, rot_me = cart_tens._threej_umat_spher_to_cart(
+                    f1, f2, hyperfine=True
+                )
+                fac = np.sqrt((2 * f1 + 1) * (2 * f2 + 1))
+                m_me[(f1, f2)] = fac * np.array(
+                    [rot_me[omega] for omega in rot_me.keys()]
+                )
+        return m_me
+
+    def _k_me(self, f1, f2, j_spin_list1, j_spin_list2, rank, kmat):
+        k_me = []
+        for j1, spin1, j_sym1, spin_sym1, j_dim1 in j_spin_list1:
+            k_me_ = []
+            for j2, spin2, j_sym2, spin_sym2, j_dim2 in j_spin_list2:
 
                 if (
                     spin1 != spin2
                     or (j1, j2) not in kmat
-                    or (sym1, sym2) not in kmat[(j1, j2)]
+                    or (j_sym1, j_sym2) not in kmat[(j1, j2)]
                 ):
-                    me_.append(np.zeros((dim1, dim2)))
+                    k_me_.append(np.zeros((j_dim1, j_dim2)))
 
-                fac = j1 * spin2[-1] + f2 + j2
+                fac = j1 + spin2[-1] + f2 + j2
                 assert float(
                     fac
                 ).is_integer(), f"Non-integer power in (-1)**f: (-1)**{fac}"
@@ -487,46 +531,13 @@ class HyperCartTensor:
                         int(spin2[-1] * 2),
                         int(f2 * 2),
                         j2 * 2,
-                        self.rank * 2,
+                        rank * 2,
                         ignore_invalid=True,
                     )
                 )
-                me_.append(kmat[(j1, j2)][(j_sym1, j_sym2)] * prefac)  # (omega, l1, l2)
-            me.append(me)
-        me = np.block(me)
+                me = kmat[(j1, j2)][(j_sym1, j_sym2)] * prefac
+                k_me_.append(me)
 
-    def k_tens(self, states, tens):
-
-        for f1 in states.f_list:
-            for f2 in states.f_list:
-                for sym1 in states.sym_list[f1]:
-                    vec1 = states.vec[f1][sym1]
-
-                    for sym2 in states.sym_list[f2]:
-                        vec2 = states.vec[f2][sym2]
-
-                for j1, spin1 in zip(states.j_list[f1], states.spin_list[f1]):
-                    for j2, spin2 in zip(states.j_list[f2], states.spin_list[f2]):
-
-                        if spin1 != spin2:
-                            continue
-
-                        fac = j1 * spin2[-1] + f2 + j2
-                        assert float(
-                            fac
-                        ).is_integer(), f"Non-integer power in (-1)**f: (-1)**{fac}"
-                        fac = int(fac)
-                        prefac = (
-                            (-1) ** fac
-                            * np.sqrt((2 * j1 + 1) * (2 * j2 + 1))
-                            * py3nj.wigner6j(
-                                j1 * 2,
-                                int(f1 * 2),
-                                int(spin2[-1] * 2),
-                                int(f2 * 2),
-                                j2 * 2,
-                                tens.rank * 2,
-                                ignore_invalid=True,
-                            )
-                        )
-                        # tens.kmat[(j1, j2)]
+            k_me.append(k_me_)
+        k_me = np.block(k_me)
+        return k_me
