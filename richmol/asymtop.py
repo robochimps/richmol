@@ -156,13 +156,13 @@ class RotStates:
         sym_list = {j: [] for j in j_list}
 
         for j in j_list:
-            print(f"solve for J = {j}")
             me, k_list[j], jktau_list[j] = rotme_rot(j=j, linear=linear, sym=sym)
 
             # matrix elements of KEO
             ham = 0.5 * np.einsum("ab,abij->ij", gmat, me, optimize="optimal")
 
             for irrep in sym.irreps:
+                print(f"solve for J = {j} and symmetry {irrep} ...")
                 ind = np.where(np.array([elem[-1] for elem in jktau_list[j]]) == irrep)[
                     0
                 ]

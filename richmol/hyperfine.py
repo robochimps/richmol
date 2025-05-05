@@ -1,5 +1,3 @@
-from collections import defaultdict
-
 import numpy as np
 import py3nj
 from scipy import constants
@@ -61,7 +59,7 @@ class HyperStates:
             angular momentum.
 
         max_f (float):
-            Minimal total angular momentum quantum number F = I + J.
+            Maximal total angular momentum quantum number F = I + J.
 
         states (RotStates):
             Molecular rotational or rovibrational energy states
@@ -77,6 +75,13 @@ class HyperStates:
             Each EFG tensor must be in atomic units.
             Defaults to an empty list, meaning quadrupole interactions are excluded.
     """
+
+    f_list: list[float]
+    f_sym_list: dict[float, list[str]]
+    j_spin_list: dict[float, dict[str, list[tuple[int, tuple[float], str, str, int]]]]
+    enr0: dict[float, dict[str, np.ndarray]]
+    enr: dict[float, dict[str, np.ndarray]]
+    vec: dict[float, dict[str, np.ndarray]]
 
     def __init__(
         self,
@@ -170,26 +175,30 @@ class HyperStates:
 
         # solve hyperfine problem for different F and symmetries
 
-        nested_dict = lambda: defaultdict(nested_dict)
-        self.enr0 = nested_dict()
-        self.enr = nested_dict()
-        self.vec = nested_dict()
+        self.enr0 = {}
+        self.enr = {}
+        self.vec = {}
 
         for f in self.f_list:
+
+            enr0 = {}
+            enr = {}
+            vec = {}
+
             for sym in self.f_sym_list[f]:
 
                 print(f"solve for F = {f} and symmetry {sym} ...")
 
                 # pure rovibrational Hamiltonian
 
-                self.enr0[f][sym] = np.concatenate(
+                enr0[sym] = np.concatenate(
                     [
                         states.enr[j][j_sym]
                         for (j, spin, j_sym, *_) in self.j_spin_list[f][sym]
                     ]
                 )
 
-                h = np.diag(self.enr0[f][sym])
+                h = np.diag(enr0[sym])
 
                 # add quadrupole interaction Hamiltonian
 
@@ -204,7 +213,11 @@ class HyperStates:
 
                 # diagonalization
 
-                self.enr[f][sym], self.vec[f][sym] = np.linalg.eigh(h)
+                enr[sym], vec[sym] = np.linalg.eigh(h)
+
+            self.enr0[f] = enr0
+            self.enr[f] = enr
+            self.vec[f] = vec
 
 
 def _quadrupole_me(
@@ -234,10 +247,10 @@ def _quadrupole_me(
             me = 0
             for efg, q in zip(efg_op, quad):
                 try:
-                    kmat = efg.kmat[(j1, j2)][(j_sym1, j_sym2)]
+                    kmat = efg.kmat[(j1, j2)][(j_sym1, j_sym2)][2]  # for omega = 2
                 except KeyError:
                     continue
-                me += kmat[2] * q
+                me += kmat * q
 
             if isinstance(me, int) and me == 0:
                 h_.append(zero_block)
@@ -265,263 +278,111 @@ def _quadrupole_me(
             h_.append(me_cm)
 
         h.append(h_)
+
     h = np.block(h)
     return h
 
 
-def quadrupole_me(
-    f_val: float,
-    states: RotStates,
-    quad_op: list[QuadMom],
-    efg_op: list[CartTensor],
-) -> tuple[list[tuple[float]], list[int], np.ndarray, np.ndarray]:
-    """Compute matrix elements of the nuclear quadrupole Hamiltonian
-    for a given total angular momentum F.
-
-    Args:
-        f_val (float):
-            Quantum number of the total angular momentum F = I + J,
-            where I is the total nuclear spin and J is the rotational angular momentum.
-
-        states (RotStates):
-            Molecular rotational or rovibrational states of the molecule.
-
-        quad_op (list[QuadMom]):
-            List of nuclear quadruple moment operators.
-            Each operator must have its quadrupole moment specified in millibarns (mb).
-
-        efg_op (list[CartTensor]):
-            List of electric field gradient tensors corresponding to each nucleus with
-            quadrupoles listed in `quad_op`. Each tensor must be expressed in atomic units.
-
-    Returns:
-        tuple:
-            - spin_list (list[tuple[float]]):
-                List of coupled nuclear spin quantum numbers for each basis state.
-                Each tuple represents sequential coupling:
-                    (I_{1}, I_{12}, ..., I_{1N}),
-                where:
-                    - I_{1} is the spin of operator 1,
-                    - I_{12} is the total spin of operators 1 and 2,
-                    - I_{1N} is the total spin of operators 1 through N.
-
-            - j_list (list[int]):
-                List of corresponding rotational quantum numbers J
-                coupled with the final total spin to achieve F.
-
-            - h0 (np.ndarray):
-                Diagonal matrix of pure rovibrational energies (in cm⁻¹),
-                without quadrupole interaction.
-            - h (np.ndarray):
-                Matrix of quadrupole Hamiltonian matrix elements (in cm⁻¹),
-                without pure rovibrational part.
-    """
-    for i, efg in enumerate(efg_op):
-        if not efg.spher_ind == Rank2Tensor().spher_ind:
-            raise ValueError(
-                f"{i}th element of 'efg_op' has invalid 'spher_ind': {efg.spher_ind}, "
-                + f"expected: {Rank2Tensor.spher_ind}"
-            ) from None
-
-    for i, quad in enumerate(quad_op):
-        if quad.name != "quad":
-            raise ValueError(
-                f"{i}th element of 'quad_op' has invalid 'name': {quad.name}, "
-                + f"expected: {QuadMom.name}"
-            )
-
-    assert len(quad_op) == len(efg_op), (
-        "'quad_op' and 'efg_op' must have the same number of elements, "
-        + f"found len(quad_op) = {len(quad_op)}, len(efg_op) = {len(efg_op)}"
-    )
-
-    # coupling combinations of J and I for given F
-
-    spin_list, j_list = near_equal_coupling_with_rotations(f_val, quad_op)
-
-    # check if all necessary J are spanned in input states and EFG tensors
-    missing = [j for j in j_list if j not in states.j_list]
-    if missing:
-        raise ValueError(
-            f"'states' is missing required J quantum numbers at 'f_val' = {f_val}\n"
-            f"expected J values: {sorted(set(j_list))}\n"
-            f"present in 'states': {sorted(states.j_list)}\n"
-            f"missing values: {sorted(set(missing))}"
-        )
-    for i, efg in enumerate(efg_op):
-        missing = [j for j in j_list if j not in efg.j_list]
-        if missing:
-            raise ValueError(
-                f"{i}th element of 'efg_op' is missing required J quantum numbers at 'f_val' = {f_val}\n"
-                f"expected J values: {sorted(set(j_list))}\n"
-                f"present in tensor: {sorted(efg.j_list)}\n"
-                f"missing values: {sorted(set(missing))}"
-            )
-
-    # quantum numbers
-
-    # spin_j_k_list = [
-    #     (spin, j, k)
-    #     for j, spin in zip(j_list, spin_list)
-    #     for sym in states.sym_list[j]
-    #     for k in range(len(states.enr[j][sym]))
-    # ]
-
-    # <I' || Q(i) || I>
-    quad_me = reduced_me(spin_list, spin_list, quad_op)
-
-    # build quadrupole interaction Hamiltonian
-
-    h = []
-    for j1, spin1 in zip(j_list, spin_list):
-        h_ = []
-        for j2, spin2 in zip(j_list, spin_list):
-
-            sym_list1 = states.sym_list[j1]
-            sym_list2 = states.sym_list[j2]
-            dim1_sym = {sym: len(states.enr[j1][sym]) for sym in sym_list1}
-            dim2_sym = {sym: len(states.enr[j2][sym]) for sym in sym_list2}
-            dim1 = sum(dim1_sym.values())
-            dim2 = sum(dim2_sym.values())
-
-            try:
-                quad = quad_me[(spin1, spin2)]
-            except KeyError:
-                h_.append(np.zeros((dim1, dim2)))
-                continue
-
-            me = 0
-            for efg, q in zip(efg_op, quad):
-                try:
-                    kmat = efg.kmat[(j1, j2)]
-                except KeyError:
-                    continue
-                me += (
-                    np.block(
-                        [
-                            [
-                                (
-                                    kmat[(sym1, sym2)][2]
-                                    if (sym1, sym2) in kmat
-                                    else np.zeros((dim1_sym[sym1], dim2_sym[sym2]))
-                                )
-                                for sym2 in sym_list2
-                            ]
-                            for sym1 in sym_list1
-                        ]
-                    )
-                    * q
-                )
-
-            if isinstance(me, int) and me == 0:
-                h_.append(np.zeros((dim1, dim2)))
-                continue
-
-            fac = spin1[-1] + f_val
-            assert float(fac).is_integer(), f"Non-integer power in (-1)**f: (-1)**{fac}"
-            fac = int(fac)
-            prefac = (
-                (-1) ** fac
-                / np.sqrt(6)
-                * np.sqrt((2 * j1 + 1) * (2 * j2 + 1))
-                * py3nj.wigner6j(
-                    int(f_val * 2),
-                    int(spin1[-1] * 2),
-                    j1 * 2,
-                    2 * 2,
-                    j2 * 2,
-                    int(spin2[-1] * 2),
-                    ignore_invalid=True,
-                )
-            )
-
-            me_cm = prefac * me * EFG_X_QUAD_INVCM
-            h_.append(me_cm)
-
-        h.append(h_)
-
-    h = np.block(h)
-
-    # field-free part
-
-    h0 = np.diag(
-        np.concatenate(
-            [states.enr[j][sym] for j in j_list for sym in states.sym_list[j]]
-        )
-    )
-
-    return spin_list, j_list, h0, h
-
-
 class HyperCartTensor:
     rank: int
-    kmat: defaultdict[tuple[float, float], defaultdict[tuple[str, str], np.ndarray]]
+    kmat: dict[tuple[float, float], dict[tuple[str, str], np.ndarray]]
     mmat: dict[tuple[float, float], np.ndarray]
+    f_list: list[float]
+    f_sym_list: dict[float, list[str]]
+    j_spin_list: dict[float, dict[str, list[tuple[int, tuple[float], str, str, int]]]]
 
-    def __init__(self, states: HyperStates, cart_tens: CartTensor):
-        self.kmat = self.k_tens(states, cart_tens)
-        self.mmat = self.m_tens(states, cart_tens)
+    def __init__(self, states: HyperStates, cart_tens: CartTensor, tol: float = 1e-12):
+        self.kmat = self._k_tens(states, cart_tens, tol)
+        self.mmat = self._m_tens(states, cart_tens, tol)
         self.rank = cart_tens.rank
         self.f_list = states.f_list
         self.f_sym_list = states.f_sym_list
         self.j_spin_list = states.j_spin_list
 
-    def k_tens(self, states, cart_tens):
-        nested_dict = lambda: defaultdict(nested_dict)
-        k_me = nested_dict()
+    def _k_tens(self, states, cart_tens, tol: float):
+        omega_list = list(cart_tens.umat_cart_to_spher.keys())
+
+        k_me = {}
 
         for f1 in states.f_list:
             for f2 in states.f_list:
+
+                k_me_sym = {}
+
                 for sym1 in states.f_sym_list[f1]:
                     for sym2 in states.f_sym_list[f2]:
-                        me = self._k_me(
-                            f1,
-                            f2,
-                            states.j_spin_list[f1][sym1],
-                            states.j_spin_list[f2][sym2],
-                            cart_tens.rank,
-                            cart_tens.kmat,
-                        )
-
                         v1 = states.vec[f1][sym1]
                         v2 = states.vec[f2][sym2]
 
-                        k_me[(f1, f2)][(sym1, sym2)] = np.einsum(
-                            "ik,oij,jl->okl", np.conj(v1), me, v2, optimize="optimal"
-                        )
+                        k_me_omega = {}
+
+                        for omega in omega_list:
+                            me = self._k_me_omega(
+                                f1,
+                                f2,
+                                sym1,
+                                sym2,
+                                states.j_spin_list,
+                                omega,
+                                cart_tens.kmat,
+                            )
+
+                            if np.any(np.abs(me) > tol):
+                                k_me_omega[omega] = np.einsum(
+                                    "ik,ij,jl->kl",
+                                    np.conj(v1),
+                                    me,
+                                    v2,
+                                    optimize="optimal",
+                                )
+
+                        if k_me_omega:
+                            k_me_sym[(sym1, sym2)] = k_me_omega
+
+                if k_me_sym:
+                    k_me[(f1, f2)] = k_me_sym
         return k_me
 
-    def m_tens(self, states, cart_tens):
+    def _m_tens(self, states, cart_tens, tol: float):
         m_me = {}
         for f1 in states.f_list:
             for f2 in states.f_list:
-                m_list1, m_list2, rot_me = cart_tens._threej_umat_spher_to_cart(
+                m_list1, m_list2, threej_u = cart_tens._threej_umat_spher_to_cart(
                     f1, f2, hyperfine=True
                 )
                 fac = np.sqrt((2 * f1 + 1) * (2 * f2 + 1))
-                m_me[(f1, f2)] = fac * np.array(
-                    [rot_me[omega] for omega in rot_me.keys()]
-                )
+
+                me = {
+                    omega: val * fac
+                    for omega, val in threej_u.items()
+                    if np.any(np.abs(val) > tol)
+                }
+
+                if me:
+                    m_me[(f1, f2)] = me
         return m_me
 
-    def _k_me(self, f1, f2, j_spin_list1, j_spin_list2, rank, kmat):
+    def _k_me_omega(self, f1, f2, sym1, sym2, j_spin_list, omega, kmat):
         k_me = []
-        for j1, spin1, j_sym1, spin_sym1, j_dim1 in j_spin_list1:
+        for j1, spin1, j_sym1, spin_sym1, j_dim1 in j_spin_list[f1][sym1]:
             k_me_ = []
-            for j2, spin2, j_sym2, spin_sym2, j_dim2 in j_spin_list2:
+            for j2, spin2, j_sym2, spin_sym2, j_dim2 in j_spin_list[f2][sym2]:
 
                 if (
                     spin1 != spin2
                     or (j1, j2) not in kmat
                     or (j_sym1, j_sym2) not in kmat[(j1, j2)]
+                    or omega not in kmat[(j1, j2)][(j_sym1, j_sym2)]
                 ):
                     k_me_.append(np.zeros((j_dim1, j_dim2)))
+                    continue
 
                 fac = j1 + spin2[-1] + f2 + j2
                 assert float(
                     fac
                 ).is_integer(), f"Non-integer power in (-1)**f: (-1)**{fac}"
                 fac = int(fac)
+
                 prefac = (
                     (-1) ** fac
                     * np.sqrt((2 * j1 + 1) * (2 * j2 + 1))
@@ -531,13 +392,16 @@ class HyperCartTensor:
                         int(spin2[-1] * 2),
                         int(f2 * 2),
                         j2 * 2,
-                        rank * 2,
+                        int(omega * 2),
                         ignore_invalid=True,
                     )
                 )
-                me = kmat[(j1, j2)][(j_sym1, j_sym2)] * prefac
+
+                me = kmat[(j1, j2)][(j_sym1, j_sym2)][omega] * prefac
+
                 k_me_.append(me)
 
             k_me.append(k_me_)
+
         k_me = np.block(k_me)
         return k_me

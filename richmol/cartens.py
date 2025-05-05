@@ -1,6 +1,5 @@
 """Rotational matrix elements of laboratory-frame Cartesian tensor operators"""
 
-from collections import defaultdict
 from dataclasses import dataclass, fields, field
 
 import numpy as np
@@ -144,33 +143,49 @@ class CartTensor:
     rank: int
     cart_ind: list[str]
     spher_ind: list[tuple[int, int]]
-    # kmat: dict[tuple[int, int], dict[tuple[str, str], np.ndarray]]
-    # mmat: dict[tuple[int, int], np.ndarray]
+    umat_cart_to_spher: dict[int, np.ndarray]
+    umat_spher_to_cart: dict[int, np.ndarray]
+    kmat: dict[
+        tuple[int, int], dict[tuple[str, str], dict[int, np.ndarray]]
+    ]  # [(j1, j2)][(sym1, sym2)][omega][kv1, kv2]
+    mmat: dict[tuple[int, int], dict[int, np.ndarray]]  # [(j1, j2)][omega][m1, m2, A]
+    j_list: list[int]
+    sym_list: dict[int, list[str]]
 
-    def __init__(self, states: RotStates, mol_tens: np.ndarray, vib: bool = False):
+    def __init__(
+        self,
+        states: RotStates,
+        mol_tens: np.ndarray,
+        vib: bool = False,
+        tol: float = 1e-12,
+    ):
         if not isinstance(mol_tens, np.ndarray):
             mol_tens = np.array(mol_tens)
+
         if vib:  # first two dimensions are vibrational quanta
             if mol_tens.ndim < 3:
                 raise ValueError(
                     f"Since 'vib' = {vib}, tensor 'mol_tens' must have at least 3 dimensions "
                     + f"(vib basis, vib basis, 3 ...), got shape = {mol_tens.shape}"
                 )
+
             if not all(dim == 3 for dim in mol_tens.shape[2:]):
                 raise ValueError(
                     f"Since 'vib' = {vib}, all dimensions of 'mol_tens' starting from the third "
                     + f"must be size 3, got shape = {mol_tens.shape}"
                 )
+
             rank = mol_tens.ndim - 2
-            self.mol_tens = mol_tens
+
         else:
             if not all(dim == 3 for dim in mol_tens.shape):
                 raise ValueError(
                     f"Since 'vib' = {vib}, all dimensions of 'mol_tens' must be size 3, "
                     + f"got shape = {mol_tens.shape}"
                 )
+
             rank = mol_tens.ndim
-            self.mol_tens = np.array(mol_tens)[np.newaxis, np.newaxis, ...]
+            mol_tens = np.array(mol_tens)[np.newaxis, np.newaxis, ...]
 
         if rank in _TENSORS:
             tens = _TENSORS[rank]()
@@ -179,12 +194,12 @@ class CartTensor:
         else:
             raise ValueError(f"Cartesian tensor for rank = {rank} is not implemented")
 
-        self.kmat = self.k_tens(states)  # [(j1 ,j2)][(sym1, sym2)][omega, k1, k2]
-        self.mmat = self.m_tens(states)  # [(j1, j2)][omega, m1, m2, A]
+        self.kmat = self._k_tens(states, mol_tens, tol)
+        self.mmat = self._m_tens(states, tol)
         self.j_list = states.j_list
         self.sym_list = states.sym_list
 
-    def m_tens(self, states):
+    def _m_tens(self, states, tol: float):
         r"""Computes M-tensor matrix elements:
 
         M_{A,\omega}^{(J',m',J,m)} = \sqrt{(2J'+1)(2J+1)} (-1)^{m'}
@@ -192,61 +207,70 @@ class CartTensor:
             threej(J, \omega, J', m, \sigma, -m')
             [U^{(\Omega)}]^{-1}_{A,\omega\sigma}
 
-        Here,
-        - \omega = 0..\Omega (rank of tensor),
-        - A = X, Y, Z for \Omega=1, XX, XY, XZ, YX, YY, ... ZZ for \Omega=2, etc.
-        - [U^{(\Omega)}]^{-1} is spherical-to-Cartesian tensor transformation matrix,
+        Here:
+            - \omega = 0..\Omega (rank of tensor)
+            - A = X, Y, Z for \Omega=1, XX, XY, XZ, YX, YY, ... ZZ for \Omega=2, etc.
+            - [U^{(\Omega)}]^{-1} is spherical-to-Cartesian tensor transformation matrix
         """
         m_me = {}
         for j1 in states.j_list:
             for j2 in states.j_list:
                 fac = np.sqrt(2 * j1 + 1) * np.sqrt(2 * j2 + 1)
-                m_list1, m_list2, rot_me = self._threej_umat_spher_to_cart(j1, j2)
-                m_me[(j1, j2)] = fac * np.array(
-                    [rot_me[omega] for omega in rot_me.keys()]
-                )
+
+                m_list1, m_list2, threej_u = self._threej_umat_spher_to_cart(j1, j2)
+
+                me = {
+                    omega: val * fac
+                    for omega, val in threej_u.items()
+                    if np.any(np.abs(val) > tol)
+                }
+
+                if me:
+                    m_me[(j1, j2)] = me
         return m_me
 
-    def k_tens(self, states):
-        r"""Computes K-tensor matrix elements:
+    def _k_tens(self, states, mol_tens, tol: float):
+        r"""Computes K-tensor matrix elements
 
-        K_{\omega}^{(J',l',J,l)} = \sum_{k',v'} \sum_{k,v} [c_{k',v'}^{(l')}]^* c_{k,v}^{(l)} (-1)^{k'}
+        K_{\omega}^{(J',l',J,l)} = \sum_{k',v'} \sum_{k,v}
+            [c_{k',v'}^{(l')}]^* c_{k,v}^{(l)} (-1)^{k'}
             \sum_{\alpha} \sum_{\sigma=-\omega}^{\omega}
             threej(J, \omega, J', k, \sigma, -k')
             U_{\omega\sigma,\alpha}^{(\Omega)}
             \langle v' |T_{\alpha}|v\rangle
 
-        Here,
-        - c_{k,v}^{(l)} are expansion coefficients of rovibrational wavefunctions,
-        - \omega = 0..\Omega (rank of tensor),
-        - \alpha = x, y, z for \Omega=1, xx, xy, xz, yx, yy, ... zz for \Omega=2,
-        - U is Cartesian-to-spherical tensor transformation matrix,
-        - T_{\alpha} are elements of tensor in molecular frame.
+        Here:
+            - c_{k,v}^{(l)} are expansion coefficients of rovibrational wavefunctions
+            - \omega = 0..\Omega (rank of tensor)
+            - \alpha = x, y, z for \Omega=1, xx, xy, xz, yx, yy, ... zz for \Omega=2
+            - U is Cartesian-to-spherical tensor transformation matrix
+            - T_{\alpha} are elements of tensor in molecular frame
         """
         # flatten molecular-frame tensor matrix elements such that the order
         # of Cartesian indices matches that in `self.cart_ind`
         cart_ind = [["xyz".index(x) for x in elem] for elem in self.cart_ind]
         if self.rank == 1:
             mol_tens = np.moveaxis(
-                np.array([self.mol_tens[..., i] for (i,) in cart_ind]), 0, -1
+                np.array([mol_tens[..., i] for (i,) in cart_ind]), 0, -1
             )
         elif self.rank == 2:
             mol_tens = np.moveaxis(
-                np.array([self.mol_tens[..., i, j] for (i, j) in cart_ind]), 0, -1
+                np.array([mol_tens[..., i, j] for (i, j) in cart_ind]), 0, -1
             )
         else:
             raise NotImplementedError(
                 f"Flattening molecular-frame tensor of rank = {self.rank} is not implemented"
             )
 
-        nested_dict = lambda: defaultdict(nested_dict)
-        k_me = nested_dict()
+        k_me = {}
 
         for j1 in states.j_list:
             for j2 in states.j_list:
-                jktau_list1, jktau_list2, rot_me = self._threej_umat_cart_to_spher(
+                jktau_list1, jktau_list2, threej_u = self._threej_umat_cart_to_spher(
                     j1, j2, states.linear
                 )
+
+                k_me_sym = {}
 
                 for sym1 in states.sym_list[j1]:
                     vec1 = states.vec[j1][sym1]
@@ -259,34 +283,44 @@ class CartTensor:
                         r_ind2 = states.r_ind[j2][sym2]
 
                         vib_me = mol_tens[np.ix_(v_ind1, v_ind2)]
-                        me = []
-                        for omega in rot_me.keys():
-                            me_ = np.einsum(
+
+                        k_me_omega = {}
+
+                        for omega in threej_u.keys():
+                            me = np.einsum(
                                 "ijc,ijc->ij",
                                 vib_me,
-                                rot_me[omega][np.ix_(r_ind1, r_ind2)],
+                                threej_u[omega][np.ix_(r_ind1, r_ind2)],
                                 optimize="optimal",
                             )
-                            me.append(
-                                np.einsum(
+
+                            if np.any(np.abs(me) > tol):
+                                k_me_omega[omega] = np.einsum(
                                     "ik,ij,jl->kl",
                                     np.conj(vec1),
-                                    me_,
+                                    me,
                                     vec2,
                                     optimize="optimal",
                                 )
-                            )
-                        k_me[(j1, j2)][(sym1, sym2)] = np.array(me)
+
+                        if k_me_omega:
+                            k_me_sym[(sym1, sym2)] = k_me_omega
+
+                if k_me_sym:
+                    k_me[(j1, j2)] = k_me_sym
         return k_me
 
     def _threej_umat_cart_to_spher(self, j1: int, j2: int, linear: bool):
-        r"""Computes three-j symbol contracted with tensor's Cartesian-to-spherical transformation,
+        r"""Computes three-j symbol contracted with tensor's Cartesian-to-spherical
+        transformation
 
         (-1)^{k'} \sum_{\sigma=-\omega}^{\omega}
             threej(J, \omega, J', k, \sigma, -k')
             U_{\omega\sigma,\alpha}^{(\Omega)},
 
-        and transforms the results to Wang's symmetrized representation of |J,k,\tau\rangle functions.
+        and transforms the results to Wang's symmetrized representation
+        of |J,k,\tau\rangle functions.
+
         Here, |j1, k'=-j1..j1\rangle are bra states, and |j2, k=-j2..j2\rangle are ket states.
         """
         k_list1, jktau_list1, wang_coefs1 = wang_coefs(j1, linear)
@@ -336,7 +370,8 @@ class CartTensor:
     def _threej_umat_spher_to_cart(
         self, j1: int | float, j2: int | float, hyperfine: bool = False
     ):
-        r"""Computes three-j symbol contracted with tensor's spherical-to-Cartesian transformation,
+        r"""Computes three-j symbol contracted with tensor's spherical-to-Cartesian
+        transformation
 
         (-1)^{m'} \sum_{\sigma=-\omega}^{\omega}
             threej(J, \omega, J', m, \sigma, -m')
@@ -358,6 +393,8 @@ class CartTensor:
         n = len(m12)
         m12_1 = m12[:, 0]
         m12_2 = m12[:, 1]
+        two_m12_1 = m12_1 * 2
+        two_m12_2 = m12_2 * 2
 
         threej = {
             omega: np.zeros((2 * omega + 1, len(m1), len(m2)), dtype=np.complex128)
@@ -368,16 +405,18 @@ class CartTensor:
                 fac = np.abs(m12_1 - j2 - omega)
             else:
                 fac = np.abs(m12_1)
-            assert float(fac).is_integer(), f"Non-integer power in (-1)**f: (-1)**{fac}"
-            fac = int(fac)
+            assert np.all(
+                np.isclose(fac % 1, 0)
+            ), f"Non-integer power in (-1)**f: (-1)**{fac}"
+            fac = fac.astype(int)
 
             thrj = (-1) ** fac * wigner3j(
                 [int(j2 * 2)] * n,
                 [omega * 2] * n,
                 [int(j1 * 2)] * n,
-                m12_2 * 2,
+                two_m12_2.astype(int),
                 [sigma * 2] * n,
-                -int(m12_1 * 2),
+                -two_m12_1.astype(int),
                 ignore_invalid=True,
             )
             threej[omega][sigma + omega] = thrj.reshape(len(m1), len(m2))
