@@ -4,7 +4,6 @@ from dataclasses import dataclass, field, fields
 
 import numpy as np
 from py3nj import wigner3j
-from scipy import constants
 from scipy.sparse import block_array, csr_array, kron
 
 from .asymtop import RotStates
@@ -211,8 +210,26 @@ class CartTensor:
             for j in self.j_list
         }
 
-    def mat(self, cart: str):
-        """Assembles full matrix of Cartesian tensor matrix elements"""
+    def mat(self, cart: str) -> csr_array:
+        """Assembles full matrix corresponding to a specific Cartesian component
+        of the tensor operator.
+
+        Args:
+            cart (str):
+                A string indicating the Cartesian component of tensor for which
+                the matrix should be assembled.
+                For example, `cart` can be 'x', 'y', or 'z' for rank-1 tensor,
+                'xx', 'xy', 'xz', 'yz', ..., 'zz' for rank-2 tensor.
+
+        Returns:
+            csr_array:
+                A sparse matrix in CSR format representing the matrix elements
+                of a specific Cartesian component of the tensor.
+        """
+        assert cart in self.cart_ind, (
+            f"Invalid Cartesian component 'cart' = {cart} for tensor of rank = {self.rank}\n"
+            + f"valid components: {self.cart_ind}"
+        )
         me_j = {}
         for j1, j2 in list(set(self.mmat.keys()) & set(self.kmat.keys())):
             try:
@@ -223,7 +240,6 @@ class CartTensor:
             kmat_j = self.kmat[(j1, j2)]
 
             me_sym = {}
-
             for (sym1, sym2), kmat in kmat_j.items():
 
                 # M \otimes K
@@ -237,38 +253,74 @@ class CartTensor:
 
             if me_sym:
                 me_j[(j1, j2)] = me_sym
+
         mat = self._dict_to_mat(me_j)
         return mat
 
-    def matvec(self, field: np.ndarray, vec: np.ndarray) -> np.ndarray:
-        """Computes product of Cartesian tensor operator with a vector"""
+    def mat_field(self, field: np.ndarray) -> csr_array:
+        r"""Constructs the matrix resulting from contracting the Cartesian
+        tensor operator with the given external field.
+
+        For example:
+            - \sum_{A=X, Y, Z} mu_A F_A, for dipole tensor (where F = `field`),
+            - \sum_{A,B=X, Y, Z} \alpha_{A,B} F_A F_B, for polarizability tensor.
+
+        Args:
+            field (np.ndarray):
+                A 1D array of shape (3,) representing the Cartesian components
+                of the external electric field.
+
+        Returns:
+            csr_array:
+                A sparse matrix in CSR format representing the field-contracted
+                operator.
+        """
+        mf = self._mf_tens(field)
+
+        me_j = {}
+
+        for j1, j2 in list(set(mf.keys()) & set(self.kmat.keys())):
+            mfmat = mf[(j1, j2)]
+            kmat_j = self.kmat[(j1, j2)]
+
+            me_sym = {}
+            for (sym1, sym2), kmat in kmat_j.items():
+
+                # M \otimes K
+                me = sum(
+                    kron(mfmat[omega], kmat[omega])
+                    for omega in list(set(mfmat.keys()) & set(kmat.keys()))
+                )
+
+                if me.nnz > 0:
+                    me_sym[(sym1, sym2)] = me
+
+            if me_sym:
+                me_j[(j1, j2)] = me_sym
+
+        mat = self._dict_to_mat(me_j)
+        return mat
+
+    def mat_vec(self, field: np.ndarray, vec: np.ndarray) -> np.ndarray:
+        """Computes the action of a Cartesian tensor operator on a vector,
+        contracted with a given external field.
+
+        Args:
+            field (np.ndarray):
+                A 1D array of shape (3,) representing the Cartesian components
+                of the external field.
+
+            vec (np.ndarray):
+                The input vector to which the tensor operator is applied.
+
+        Returns:
+            np.ndarray:
+                The resulting vector after contraction with the field.
+        """
         vec_dict = self._vec_to_dict(vec)
 
         # multiply M-tensor with field
-
-        field_arr = np.array(field)
-        assert field.shape == (3,), (
-            f"Invalid 'field': expected 3 Cartesian components (shape = (3,)), "
-            f"but got shape = {field_arr.shape}"
-        )
-
-        field_tens = {
-            elem: np.prod(field_arr[["xyz".index(x) for x in elem]])
-            for elem in self.cart_ind
-        }
-
-        mf = {}
-        for (j1, j2), m_j in self.mmat.items():
-            mf_o = {}
-            for cart, m_cart in m_j.items():
-                for omega, m in m_cart.items():
-                    try:
-                        mf_o[omega] += m * field_tens[cart]
-                    except KeyError:
-                        mf_o[omega] = m * field_tens[cart]
-
-            if mf_o:
-                mf[(j1, j2)] = mf_o
+        mf = self._mf_tens(field)
 
         # build (M \otimes K) \cdot vec
 
@@ -302,6 +354,35 @@ class CartTensor:
 
         vec2 = self._dict_to_vec(vec2)
         return vec2
+
+    def _mf_tens(self, field: np.ndarray):
+        """Multiplies the M-tensor matrix elements with the input field
+        and sums over all Cartesian components.
+        """
+        field_arr = np.array(field)
+        assert field.shape == (3,), (
+            f"Invalid 'field': expected 3 Cartesian components (shape = (3,)), "
+            f"but got shape = {field_arr.shape}"
+        )
+
+        field_tens = {
+            elem: np.prod(field_arr[["xyz".index(x) for x in elem]])
+            for elem in self.cart_ind
+        }
+
+        mf = {}
+        for (j1, j2), m_j in self.mmat.items():
+            mf_o = {}
+            for cart, m_cart in m_j.items():
+                for omega, m in m_cart.items():
+                    try:
+                        mf_o[omega] += m * field_tens[cart]
+                    except KeyError:
+                        mf_o[omega] = m * field_tens[cart]
+
+            if mf_o:
+                mf[(j1, j2)] = mf_o
+        return mf
 
     def _m_tens(self, states, tol: float):
         r"""Computes M-tensor matrix elements:
@@ -549,7 +630,7 @@ class CartTensor:
             )
         return m_list1, m_list2, threej_u
 
-    def _vec_to_dict(self, vec):
+    def _vec_to_dict(self, vec: np.ndarray):
         """Converts vector vec[...] to vec[j][sym][:]"""
         vec_dict = {}
         offset = 0
@@ -561,7 +642,7 @@ class CartTensor:
                 offset += d
         return vec_dict
 
-    def _dict_to_vec(self, vec_dict):
+    def _dict_to_vec(self, vec_dict) -> np.ndarray:
         """Converts vector vec[j][sym][:] to vec[...]"""
         blocks = []
         for j in self.j_list:
@@ -569,7 +650,7 @@ class CartTensor:
                 blocks.append(vec_dict[j][sym])
         return np.concatenate(blocks)
 
-    def _dict_to_mat(self, mat_dict):
+    def _dict_to_mat(self, mat_dict) -> csr_array:
         """Converts matrix mat[(j1, j2)][(sym1, sym2)][:, :] to mat[...]"""
         mat = block_array(
             [

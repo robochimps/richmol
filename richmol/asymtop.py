@@ -7,6 +7,7 @@ import numpy as np
 from jax import numpy as jnp
 from mendeleev import element
 from scipy import constants
+from scipy.sparse import csr_array, diags
 
 from .symmetry import SymmetryType
 from .symtop import rotme_rot, rotme_rot_diag
@@ -198,6 +199,14 @@ class RotStates:
                     )
 
         return cls(masses, xyz, linear, j_list, sym_list, enr, vec, r_ind, v_ind)
+
+    def mat(self):
+        e0 = []
+        for j in self.j_list:
+            for sym in self.sym_list[j]:
+                for m in range(-j, j + 1):
+                    e0.append(self.enr[j][sym])
+        return csr_array(diags(np.concatenate(e0)))
 
 
 def _gmat(masses, xyz):
