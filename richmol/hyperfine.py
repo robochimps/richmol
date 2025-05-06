@@ -1,6 +1,7 @@
 import numpy as np
 import py3nj
 from scipy import constants
+from scipy.sparse import block_array, csr_array
 
 from .asymtop import RotStates
 from .cartens import CartTensor, Rank2Tensor
@@ -204,11 +205,14 @@ class HyperStates:
 
                 if len(quad_op_ind) > 0:
                     print("add quadrupole")
-                    h = h + _quadrupole_me(
-                        f,
-                        self.j_spin_list[f][sym],
-                        [spin_op[i] for i in quad_op_ind],
-                        [efg_op[i] for i in quad_op_ind],
+                    h = (
+                        h
+                        + _quadrupole_me(
+                            f,
+                            self.j_spin_list[f][sym],
+                            [spin_op[i] for i in quad_op_ind],
+                            [efg_op[i] for i in quad_op_ind],
+                        ).toarray()
                     )
 
                 # diagonalization
@@ -236,7 +240,7 @@ def _quadrupole_me(
         h_ = []
         for j2, spin2, j_sym2, spin_sym2, j_dim2 in j_spin_list:
 
-            zero_block = np.zeros((j_dim1, j_dim2))
+            zero_block = csr_array(np.zeros((j_dim1, j_dim2)))
 
             try:
                 quad = quad_me[(spin1, spin2)]
@@ -279,7 +283,7 @@ def _quadrupole_me(
 
         h.append(h_)
 
-    h = np.block(h)
+    h = block_array(h)
     return h
 
 

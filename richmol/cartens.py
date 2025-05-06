@@ -1,13 +1,14 @@
 """Rotational matrix elements of laboratory-frame Cartesian tensor operators"""
 
-from dataclasses import dataclass, fields, field
+from dataclasses import dataclass, field, fields
 
 import numpy as np
 from py3nj import wigner3j
+from scipy import constants
+from scipy.sparse import block_array, csr_array, kron
 
 from .asymtop import RotStates
 from .symtop import wang_coefs
-
 
 _TENSORS: dict[int, type] = {}
 
@@ -52,6 +53,7 @@ class Rank1Tensor:
         umat_spher_to_cart = np.linalg.pinv(
             np.concatenate([self.umat_cart_to_spher[o] for o in omega], axis=0)
         )
+
         # spherical-to-Cartesian tensor transformation
         # rows: Cartesian indices x, y, z
         # columns: spherical indices {1: [(1,-1), (1,0), (1,1)]}
@@ -128,6 +130,7 @@ class Rank2Tensor:
         umat_spher_to_cart = np.linalg.pinv(
             np.concatenate([self.umat_cart_to_spher[o] for o in omega], axis=0)
         )
+
         # spherical-to-Cartesian tensor transformation
         # rows: Cartesian indices [xx, xy, xz, yz, yy, ..., zz]
         # columns: spherical indices {0: [(0,0)], 1: [(1,-1), (1,0), (1,1)], 2: [(2,-2), (2,-1), ..., (2,2)]}
@@ -146,11 +149,15 @@ class CartTensor:
     umat_cart_to_spher: dict[int, np.ndarray]
     umat_spher_to_cart: dict[int, np.ndarray]
     kmat: dict[
-        tuple[int, int], dict[tuple[str, str], dict[int, np.ndarray]]
-    ]  # [(j1, j2)][(sym1, sym2)][omega][kv1, kv2]
-    mmat: dict[tuple[int, int], dict[int, np.ndarray]]  # [(j1, j2)][omega][m1, m2, A]
+        tuple[int, int], dict[tuple[str, str], dict[int, csr_array]]
+    ]  # [(j1, j2)][(sym1, sym2)][omega][{kv1, kv2}]
+    mmat: dict[
+        tuple[int, int], dict[str, dict[int, csr_array]]
+    ]  # [(j1, j2)][A][omega][{m1, m2}]
     j_list: list[int]
     sym_list: dict[int, list[str]]
+    dim_k: dict[int, dict[str, int]]
+    dim_m: dict[int, int]
 
     def __init__(
         self,
@@ -198,6 +205,103 @@ class CartTensor:
         self.mmat = self._m_tens(states, tol)
         self.j_list = states.j_list
         self.sym_list = states.sym_list
+        self.dim_m = {j: 2 * j + 1 for j in self.j_list}
+        self.dim_k = {
+            j: {sym: len(states.enr[j][sym]) for sym in self.sym_list[j]}
+            for j in self.j_list
+        }
+
+    def mat(self, cart: str):
+        """Assembles full matrix of Cartesian tensor matrix elements"""
+        me_j = {}
+        for j1, j2 in list(set(self.mmat.keys()) & set(self.kmat.keys())):
+            try:
+                mmat = self.mmat[(j1, j2)][cart]
+            except KeyError:
+                continue
+
+            kmat_j = self.kmat[(j1, j2)]
+
+            me_sym = {}
+
+            for (sym1, sym2), kmat in kmat_j.items():
+
+                # M \otimes K
+                me = sum(
+                    kron(mmat[omega], kmat[omega])
+                    for omega in list(set(mmat.keys()) & set(kmat.keys()))
+                )
+
+                if me.nnz > 0:
+                    me_sym[(sym1, sym2)] = me
+
+            if me_sym:
+                me_j[(j1, j2)] = me_sym
+        mat = self._dict_to_mat(me_j)
+        return mat
+
+    def matvec(self, field: np.ndarray, vec: np.ndarray) -> np.ndarray:
+        """Computes product of Cartesian tensor operator with a vector"""
+        vec_dict = self._vec_to_dict(vec)
+
+        # multiply M-tensor with field
+
+        field_arr = np.array(field)
+        assert field.shape == (3,), (
+            f"Invalid 'field': expected 3 Cartesian components (shape = (3,)), "
+            f"but got shape = {field_arr.shape}"
+        )
+
+        field_tens = {
+            elem: np.prod(field_arr[["xyz".index(x) for x in elem]])
+            for elem in self.cart_ind
+        }
+
+        mf = {}
+        for (j1, j2), m_j in self.mmat.items():
+            mf_o = {}
+            for cart, m_cart in m_j.items():
+                for omega, m in m_cart.items():
+                    try:
+                        mf_o[omega] += m * field_tens[cart]
+                    except KeyError:
+                        mf_o[omega] = m * field_tens[cart]
+
+            if mf_o:
+                mf[(j1, j2)] = mf_o
+
+        # build (M \otimes K) \cdot vec
+
+        vec2 = {}
+
+        for j1, j2 in list(set(mf) & set(self.kmat.keys())):
+            mfmat = mf[(j1, j2)]
+            kmat_j = self.kmat[(j1, j2)]
+            dim_m1 = self.dim_m[j1]
+            dim_m2 = self.dim_m[j2]
+
+            if j1 not in vec2.keys():
+                vec2[j1] = {}
+
+            for (sym1, sym2), kmat in kmat_j.items():
+                dim_k1 = self.dim_k[j1][sym1]
+                dim_k2 = self.dim_k[j2][sym2]
+                dim1 = dim_m1 * dim_k1
+                vec_tr = np.transpose(vec_dict[j2][sym2].reshape(dim_m2, dim_k2))
+
+                res = []
+                for omega in list(set(mfmat.keys()) & set(kmat.keys())):
+                    kv = kmat[omega].dot(vec_tr)
+                    mkv = mfmat[omega].dot(kv.T)
+                    res.append(mkv.reshape(dim1))
+
+                try:
+                    vec2[j1][sym1] += sum(res)
+                except KeyError:
+                    vec2[j1][sym1] = sum(res)
+
+        vec2 = self._dict_to_vec(vec2)
+        return vec2
 
     def _m_tens(self, states, tol: float):
         r"""Computes M-tensor matrix elements:
@@ -219,14 +323,23 @@ class CartTensor:
 
                 m_list1, m_list2, threej_u = self._threej_umat_spher_to_cart(j1, j2)
 
-                me = {
-                    omega: val * fac
-                    for omega, val in threej_u.items()
-                    if np.any(np.abs(val) > tol)
-                }
+                me_cart = {}
+                for icart, cart in enumerate(self.cart_ind):
 
-                if me:
-                    m_me[(j1, j2)] = me
+                    me_o = {}
+                    for omega in threej_u.keys():
+                        me = threej_u[omega][:, :, icart] * fac
+                        me[np.abs(me) < tol] = 0
+                        me = csr_array(me)
+
+                        if me.nnz > 0:
+                            me_o[omega] = me
+
+                    if me_o:
+                        me_cart[cart] = me_o
+
+                if me_cart:
+                    m_me[(j1, j2)] = me_cart
         return m_me
 
     def _k_tens(self, states, mol_tens, tol: float):
@@ -295,13 +408,18 @@ class CartTensor:
                             )
 
                             if np.any(np.abs(me) > tol):
-                                k_me_omega[omega] = np.einsum(
+                                me = np.einsum(
                                     "ik,ij,jl->kl",
                                     np.conj(vec1),
                                     me,
                                     vec2,
                                     optimize="optimal",
                                 )
+
+                                me[np.abs(me) < tol] = 0
+                                me = csr_array(me)
+                                if me.nnz > 0:
+                                    k_me_omega[omega] = me
 
                         if k_me_omega:
                             k_me_sym[(sym1, sym2)] = k_me_omega
@@ -430,3 +548,50 @@ class CartTensor:
                 optimize="optimal",
             )
         return m_list1, m_list2, threej_u
+
+    def _vec_to_dict(self, vec):
+        """Converts vector vec[...] to vec[j][sym][:]"""
+        vec_dict = {}
+        offset = 0
+        for j in self.j_list:
+            vec_dict[j] = {}
+            for sym in self.sym_list[j]:
+                d = self.dim_k[j][sym] * self.dim_m[j]
+                vec_dict[j][sym] = vec[offset : offset + d]
+                offset += d
+        return vec_dict
+
+    def _dict_to_vec(self, vec_dict):
+        """Converts vector vec[j][sym][:] to vec[...]"""
+        blocks = []
+        for j in self.j_list:
+            for sym in self.sym_list[j]:
+                blocks.append(vec_dict[j][sym])
+        return np.concatenate(blocks)
+
+    def _dict_to_mat(self, mat_dict):
+        """Converts matrix mat[(j1, j2)][(sym1, sym2)][:, :] to mat[...]"""
+        mat = block_array(
+            [
+                [
+                    (
+                        mat_dict[(j1, j2)][(sym1, sym2)]
+                        if (j1, j2) in mat_dict.keys()
+                        and (sym1, sym2) in mat_dict[(j1, j2)].keys()
+                        else csr_array(
+                            np.zeros(
+                                (
+                                    self.dim_m[j1] * self.dim_k[j1][sym1],
+                                    self.dim_m[j2] * self.dim_k[j2][sym2],
+                                )
+                            )
+                        )
+                    )
+                    for j2 in self.j_list
+                    for sym2 in self.sym_list[j2]
+                ]
+                for j1 in self.j_list
+                for sym1 in self.sym_list[j1]
+            ]
+        )
+        return mat
