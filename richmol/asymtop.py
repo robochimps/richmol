@@ -10,7 +10,7 @@ from scipy import constants
 from scipy.sparse import csr_array, diags
 
 from .symmetry import SymmetryType
-from .symtop import rotme_rot, rotme_rot_diag
+from .symtop import rotme_rot, rotme_rot_diag, symtop_on_grid_split_angles
 from .units import UnitType
 
 jax.config.update("jax_enable_x64", True)
@@ -207,6 +207,115 @@ class RotStates:
                 for m in range(-j, j + 1):
                     e0.append(self.enr[j][sym])
         return csr_array(diags(np.concatenate(e0)))
+
+    def dens_on_grid(
+        self,
+        j1: int,
+        sym1: str,
+        istate1: int,
+        j2: int,
+        sym2: str,
+        istate2: int,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        gamma: np.ndarray,
+    ) -> np.ndarray:
+        """Computes the reduced rotational probability density between two states
+        as a function of the three Euler angles (α, β, γ).
+        The density is obtained by integrating over vibrational coordinates,
+        assuming an orthonormal vibrational basis.
+
+        Args:
+            j1 (int):
+                Quantum number of the rotational angular momentum J for the bra-state.
+
+            sym1 (str):
+                Symmetry label of the bra-state.
+
+            istate1 (int):
+                Index of the bra-state within states of the same J and symmetry.
+
+            j2 (int):
+                Quantum number of the rotational angular momentum J for the ket-state.
+
+            sym2 (str):
+                Symmetry label of the ket-state.
+
+            istate2 (int):
+                Index of the ket-state within states of the same J and symmetry.
+
+            alpha (np.ndarray):
+                1D array of alpha Euler angles in radians.
+
+            beta (np.ndarray):
+                1D array of beta Euler angles in radians.
+
+            gamma (np.ndarray):
+                1D array of gamma Euler angles in radians.
+
+        Returns:
+            np.ndarray:
+                3D array of shape (len(alpha), len(beta), len(gamma)) representing
+                the reduced probability density for the specified states
+                over the Euler angle grid.
+        """
+        rot_kv1, rot_m1, rot_l1, vib_ind1 = self._psi_on_grid(
+            j1, sym1, istate1, alpha, beta, gamma
+        )
+
+        rot_kv2, rot_m2, rot_l2, vib_ind2 = self._psi_on_grid(
+            j2, sym2, istate2, alpha, beta, gamma
+        )
+
+        vib_ind12 = list(set(vib_ind1) & set(vib_ind2))
+        vi1 = [vib_ind1.index(v) for v in vib_ind12]
+        vi2 = [vib_ind2.index(v) for v in vib_ind12]
+        diff = list(set(vib_ind1) - set(vib_ind2))
+        assert len(diff) == 0, (
+            f"States (j1, sym1, istate1) = {(j1, sym1, istate1)} and (j2, sym2, istate2) = {(j2, sym2, istate2)}\n"
+            + f"have non-overlapping sets of unique vibrational quanta: {list(set(vib_ind1))} != {list(set(vib_ind2))},\n"
+            + f"difference: {diff}"
+        )
+
+        den_kv = np.einsum(
+            "vlg,vng->lng", np.conj(rot_kv1[vi1]), rot_kv2[vi2], optimize="optimal"
+        )
+        den_m = np.einsum("mlg,mng->lng", np.conj(rot_m1), rot_m2, optimize="optimal")
+        den_l = np.einsum("lg,ng->lng", np.conj(rot_l1), rot_l2, optimize="optimal")
+
+        dens = np.einsum(
+            "lng,lna,lnb,b->abg", den_kv, den_m, den_l, np.sin(beta), optimize="optimal"
+        )
+        return dens
+
+    def _psi_on_grid(
+        self,
+        j: int,
+        sym: str,
+        istate: int,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        gamma: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
+        rot_k, rot_m, rot_l, k_list, jktau_list = symtop_on_grid_split_angles(
+            j, alpha, beta, gamma
+        )
+
+        rot_ind = self.r_ind[j][sym]
+        vib_ind = self.v_ind[j][sym]
+        coefs = self.vec[j][sym][:, istate]
+
+        rot_k = rot_k[rot_ind]
+        vib_ind_unique = list(set(vib_ind))
+        v_ind = [np.where(vib_ind == ind)[0] for ind in vib_ind_unique]
+        unique_vec = np.zeros((len(vib_ind), len(vib_ind_unique)))
+        for i, v in enumerate(v_ind):
+            unique_vec[v, i] = 1
+        pass
+        rot_kv = np.einsum(
+            "k,klg,kv->vlg", coefs, rot_k, unique_vec, optimize="optimal"
+        )
+        return rot_kv, rot_m, rot_l, vib_ind_unique
 
 
 def _gmat(masses, xyz):
