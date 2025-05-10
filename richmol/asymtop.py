@@ -1,13 +1,16 @@
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Callable
 
 import jax
 import numpy as np
 from jax import numpy as jnp
 from mendeleev import element
-from scipy import constants
+from scipy import constants, stats
+from scipy.interpolate import RegularGridInterpolator
 from scipy.sparse import csr_array, diags
+from scipy.spatial.transform import Rotation
 
 from .symmetry import SymmetryType
 from .symtop import rotme_rot, rotme_rot_diag, symtop_on_grid_split_angles
@@ -16,13 +19,15 @@ from .units import UnitType
 jax.config.update("jax_enable_x64", True)
 
 
-G_to_invcm = (
+G_TO_INVCM = (
     constants.value("Planck constant")
     * constants.value("Avogadro constant")
     * 1e16
     / (4.0 * np.pi**2 * constants.value("speed of light in vacuum"))
     * 1e5
 )
+
+G_SING_TOL = 1e-12
 
 EPS = jnp.array(
     [
@@ -44,6 +49,28 @@ class RotStates:
     vec: defaultdict[int, defaultdict[str, np.ndarray]]
     r_ind: defaultdict[int, defaultdict[str, np.ndarray]]
     v_ind: defaultdict[int, defaultdict[str, np.ndarray]]
+
+    dim_k: dict[int, dict[str, int]] = field(init=False)
+    dim_m: dict[int, int] = field(init=False)
+    mk_ind: dict[int, dict[str, list[tuple[int, int]]]] = field(init=False)
+
+    def __post_init__(self):
+        self.dim_m = {j: 2 * j + 1 for j in self.j_list}
+        self.dim_k = {
+            j: {sym: len(self.enr[j][sym]) for sym in self.sym_list[j]}
+            for j in self.j_list
+        }
+        self.mk_ind = {
+            j: {
+                sym: [
+                    (m, k)
+                    for m in range(self.dim_m[j])
+                    for k in range(self.dim_k[j][sym])
+                ]
+                for sym in self.sym_list[j]
+            }
+            for j in self.j_list
+        }
 
     @classmethod
     def from_geometry(
@@ -134,15 +161,27 @@ class RotStates:
         print("Symmetry group:", sym.name)
 
         # rotational kinetic energy G-matrix
+
         masses = np.array(atom_masses)
         xyz = np.array(atom_xyz)
         com = masses @ xyz / jnp.sum(masses)
         xyz -= com[None, :]
+
+        linear = _check_linear(xyz)
+        if linear:
+            print("Molecule is linear")
+
         gmat = _gmat(masses, xyz)[:3, :3]
-        gmat = np.linalg.inv(gmat) * G_to_invcm
+        u, sv, v = np.linalg.svd(gmat, full_matrices=True)
+        d = np.where(sv > G_SING_TOL, 1 / sv, 0)
+
+        nnz = np.count_nonzero(d == 0)
+        if (nnz == 1 and not linear) or nnz > 1:
+            raise ValueError(f"Kinetic energy g-matrix is singular") from None
+
+        gmat = (u @ np.diag(d) @ v) * G_TO_INVCM
 
         # matrix elements of JxJy
-        linear = _check_linear(xyz)
 
         nested_dict = lambda: defaultdict(nested_dict)
         enr = nested_dict()
@@ -208,7 +247,233 @@ class RotStates:
                     e0.append(self.enr[j][sym])
         return csr_array(diags(np.concatenate(e0)))
 
-    def dens_on_grid(
+    def mc_costheta(
+        self,
+        coefs: np.ndarray,
+        mol_axis: np.ndarray = np.array([0, 0, 1]),
+        lab_axis: np.ndarray = np.array([0, 0, 1]),
+        lab_plane: np.ndarray = np.array([[0, 1, 0], [0, 0, 1]]),
+        alpha: np.ndarray = np.linspace(0, 2 * np.pi, 30),
+        beta: np.ndarray = np.linspace(0, np.pi, 30),
+        gamma: np.ndarray = np.linspace(0, 2 * np.pi, 30),
+        npoints: int = 1000000,
+        tol: float = 1e-12,
+    ):
+        """Calculates expectation values of angular observables for a wavepacket
+        using Metropolis sampling approach.
+
+        Computes the expectation values of cos(theta), cos^2(theta), cos(theta_2D), and
+        cos^2(theta_2D), where theta is the angle between a molecular-frame
+        vector (`mol_axis`) and a laboratory-frame vector (`lab_axis`), and
+        theta_2D is the projection of theta onto a plane defined by `lab_plane`.
+
+        Args:
+            coefs (np.ndarray):
+                2D array of wavepacket coefficients, where the first
+                dimension indexes rovibrational states and the second
+                may index time steps or other parameters.
+
+            mol_axis (np.ndarray, optional):
+                3-element array representing molecular-frame axis.
+                Default is [0.0, 0.0, 1.0], i.e., z-axis.
+
+            lab_axis (np.ndarray, optional):
+                3-element array representing laboratory-frame axis.
+                Default is [0.0, 0.0, 1.0], i.e., Z-axis.
+
+            lab_plane (np.ndarray, optional):
+                2x3 array where each row defines a vector spanning the laboratory plane
+                used for theta_2D projection.
+                Default is [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], i.e., YZ-plane.
+
+            alpha (np.ndarray, optional):
+                1D array of alpha Euler angles in radians.
+                Default is np.linspace(0, 2 * np.pi, 30).
+
+            beta (np.ndarray, optional):
+                1D array of beta Euler angles in radians.
+                Default is np.linspace(0, np.pi, 30).
+
+            gamma (np.ndarray, optional):
+                1D array of gamma Euler angles in radians.
+                Default is np.linspace(0, 2 * np.pi, 30).
+
+            npoints (int, optional):
+                Number of points used for Metropolis rejection sampling.
+                Default is 1,000,000
+
+            tol (float, optional):
+                Coefficients with magnitudes below this threshold are ignored.
+                Default is 1e-12.
+
+        !TODO: check return doc
+        Returns:
+            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                A tuple containing the following lists of arrays:
+                - costheta: List of cos(theta) expectation values for each time step.
+                - cos2theta: List of cos^2(theta) expectation values for each time step.
+                - costheta2d: List of cos(theta_2D) expectation values for each time step.
+                - cos2theta2d: List of cos^2(theta_2D) expectation values for each time step.
+        """
+        print("compute density")
+        dens = self.rot_dens_wp(coefs, alpha, beta, gamma, tol=tol)
+        print("interpolate density")
+        fdens = RegularGridInterpolator((alpha, beta, gamma), dens)
+        max_dens = np.max(dens, axis=(0, 1, 2))
+        pts = np.random.uniform(
+            low=[0, 0, 0], high=[2 * np.pi, np.pi, 2 * np.pi], size=(npoints, 3)
+        )
+        w = fdens(pts) / max_dens
+        eta = np.random.uniform(0.0, 1.0, size=len(w))
+        points = [pts[np.where(w_ > eta)] for w_ in w.T]
+        rot_mat = [Rotation.from_euler("ZYZ", pts).as_matrix() for pts in points]
+        ### TODO!!! check "ZYZ" or "zyz"?
+
+        # distribution of the molecular-frame axis `mol_axis` in laboratory frame
+        mol_axis = np.array(mol_axis) / np.linalg.norm(mol_axis)
+        mol_axis_distr = [np.dot(mat, mol_axis) for mat in rot_mat]
+
+        # normalize lab axis and lab plane
+        lab_axis = np.array(lab_axis) / np.linalg.norm(lab_axis)
+        lab_plane = np.array(lab_plane) / np.linalg.norm(lab_plane, axis=-1)[:, None]
+
+        # vector perpendicular to the laboratory plane `lab_plane`
+        lab_plane_norm = np.cross(*lab_plane)
+        lab_plane_norm = lab_plane_norm / np.linalg.norm(lab_plane_norm)
+
+        # projection of the laboratory axis `lab_axis` onto the laboratory plane `lab_plane`
+        lab_axis_lab_plane = np.cross(
+            lab_plane_norm, np.cross(lab_axis, lab_plane_norm)
+        )
+
+        # projection of the molecular axis distribution onto the laboratory axis `lab_axis`
+        mol_axis_lab_axis = [np.dot(ax, lab_axis) for ax in mol_axis_distr]
+
+        # projection of the molecular axis distribution onto the laboratory plane `lab_plane`
+        mol_axis_lab_plane = [
+            np.cross(lab_plane_norm, np.cross(ax, lab_plane_norm))
+            for ax in mol_axis_distr
+        ]
+        mol_axis_lab_plane = [
+            ax / np.linalg.norm(ax, axis=-1)[:, None] for ax in mol_axis_lab_plane
+        ]
+
+        # projection of `mol_axis_lab_plane` onto the `lab_axis_lab_plane`
+        mol_axis_lab_axis_plane = [
+            np.dot(ax, lab_axis_lab_plane) for ax in mol_axis_lab_plane
+        ]
+
+        # cos of theta between molecular axis `mol_axis` and laboratory axis `lab_axis`
+        # and its projection onto laboratory plane `lab_plane`
+        costheta = [np.mean(elem) for elem in mol_axis_lab_axis]
+        cos2theta = [np.mean(elem**2) for elem in mol_axis_lab_axis]
+        costheta2d = [np.mean(elem) for elem in mol_axis_lab_axis_plane]
+        cos2theta2d = [np.mean(elem**2) for elem in mol_axis_lab_axis_plane]
+
+        return costheta, cos2theta, costheta2d, cos2theta2d
+
+    def rot_dens_wp(
+        self,
+        coefs: np.ndarray,
+        alpha: np.ndarray = np.linspace(0, 2 * np.pi, 30),
+        beta: np.ndarray = np.linspace(0, np.pi, 30),
+        gamma: np.ndarray = np.linspace(0, 2 * np.pi, 30),
+        tol=1e-12,
+    ) -> np.ndarray:
+        """Computes the reduced rotational probability density of a wavepacket
+        as a function of Euler angles α, β, γ.
+        The density is obtained by integrating over vibrational coordinates,
+        assuming an orthonormal vibrational basis.
+
+        Args:
+            coefs (np.ndarray):
+                Array of wavepacket coefficients, where the first
+                dimension indexes rovibrational states.
+
+            alpha (np.ndarray, optional):
+                1D array of alpha Euler angles in radians.
+                Default is np.linspace(0, 2 * np.pi, 30).
+
+            beta (np.ndarray, optional):
+                1D array of beta Euler angles in radians.
+                Default is np.linspace(0, np.pi, 30).
+
+            gamma (np.ndarray, optional):
+                1D array of gamma Euler angles in radians.
+                Default is np.linspace(0, 2 * np.pi, 30).
+
+            tol (float, optional):
+                Coefficients with magnitudes below this threshold are ignored.
+                Default is 1e-12.
+
+        Returns:
+            np.ndarray:
+                An array of shape (len(alpha), len(beta), len(gamma), ...) representing
+                the reduced rotational probability density on the Euler angle grid.
+                The trailing dimensions match `coefs.shape[1:]` or equal to 1
+                if `coefs` has only one dimension.
+        """
+        na = len(alpha)
+        nb = len(beta)
+        ng = len(gamma)
+
+        if coefs.ndim == 1:
+            coefs_ = np.array([coefs])
+        else:
+            coefs_ = coefs
+
+        coefs_dict = self._vec_to_dict(coefs_)
+        coefs_ind = {
+            j: {
+                sym: np.any(np.abs(coefs_dict[j][sym]) > tol, axis=1).nonzero()[0]
+                for sym in self.sym_list[j]
+            }
+            for j in self.j_list
+        }
+
+        dens = np.zeros((na, nb, ng, *coefs_.shape[1:]), dtype=np.complex128)
+
+        for j1 in self.j_list:
+            for sym1 in self.sym_list[j1]:
+                ind1 = coefs_ind[j1][sym1]
+                dim1 = len(ind1)
+                c1 = coefs_dict[j1][sym1][ind1]
+                if dim1 == 0:
+                    continue
+
+                for j2 in self.j_list:
+                    for sym2 in self.sym_list[j2]:
+                        ind2 = coefs_ind[j2][sym2]
+                        dim2 = len(ind2)
+                        c2 = coefs_dict[j2][sym2][ind2]
+                        if dim2 == 0:
+                            continue
+
+                        d = np.zeros((dim1, dim2, na, nb, ng), dtype=np.complex128)
+
+                        for i, istate1 in enumerate(ind1):
+                            for j, istate2 in enumerate(ind2):
+                                d[i, j] = self.rot_dens(
+                                    j1,
+                                    sym1,
+                                    istate1,
+                                    j2,
+                                    sym2,
+                                    istate2,
+                                    alpha,
+                                    beta,
+                                    gamma,
+                                )
+                        dens += np.einsum(
+                            "i...,ijabg,j...->abg...",
+                            np.conj(c1),
+                            d,
+                            c2,
+                            optimize="optimal",
+                        )
+        return dens
+
+    def rot_dens(
         self,
         j1: int,
         sym1: str,
@@ -220,8 +485,8 @@ class RotStates:
         beta: np.ndarray,
         gamma: np.ndarray,
     ) -> np.ndarray:
-        """Computes the reduced rotational probability density between two states
-        as a function of the three Euler angles (α, β, γ).
+        """Computes the reduced rotational probability density for two selected states
+        as a function of Euler angles α, β, γ.
         The density is obtained by integrating over vibrational coordinates,
         assuming an orthonormal vibrational basis.
 
@@ -256,15 +521,17 @@ class RotStates:
         Returns:
             np.ndarray:
                 3D array of shape (len(alpha), len(beta), len(gamma)) representing
-                the reduced probability density for the specified states
-                over the Euler angle grid.
+                the reduced rotational probability density for the specified states
+                on the Euler angle grid.
         """
-        rot_kv1, rot_m1, rot_l1, vib_ind1 = self._psi_on_grid(
-            j1, sym1, istate1, alpha, beta, gamma
+        im1, ik1 = self.mk_ind[j1][sym1][istate1]
+        rot_kv1, rot_m1, rot_l1, vib_ind1 = self._rot_psi_grid(
+            j1, sym1, ik1, alpha, beta, gamma
         )
 
-        rot_kv2, rot_m2, rot_l2, vib_ind2 = self._psi_on_grid(
-            j2, sym2, istate2, alpha, beta, gamma
+        im2, ik2 = self.mk_ind[j2][sym2][istate2]
+        rot_kv2, rot_m2, rot_l2, vib_ind2 = self._rot_psi_grid(
+            j2, sym2, ik2, alpha, beta, gamma
         )
 
         vib_ind12 = list(set(vib_ind1) & set(vib_ind2))
@@ -280,7 +547,7 @@ class RotStates:
         den_kv = np.einsum(
             "vlg,vng->lng", np.conj(rot_kv1[vi1]), rot_kv2[vi2], optimize="optimal"
         )
-        den_m = np.einsum("mlg,mng->lng", np.conj(rot_m1), rot_m2, optimize="optimal")
+        den_m = np.einsum("lg,ng->lng", np.conj(rot_m1[im1]), rot_m2[im2], optimize="optimal")
         den_l = np.einsum("lg,ng->lng", np.conj(rot_l1), rot_l2, optimize="optimal")
 
         dens = np.einsum(
@@ -288,7 +555,7 @@ class RotStates:
         )
         return dens
 
-    def _psi_on_grid(
+    def _rot_psi_grid(
         self,
         j: int,
         sym: str,
@@ -311,11 +578,30 @@ class RotStates:
         unique_vec = np.zeros((len(vib_ind), len(vib_ind_unique)))
         for i, v in enumerate(v_ind):
             unique_vec[v, i] = 1
-        pass
         rot_kv = np.einsum(
             "k,klg,kv->vlg", coefs, rot_k, unique_vec, optimize="optimal"
         )
         return rot_kv, rot_m, rot_l, vib_ind_unique
+
+    def _vec_to_dict(self, vec: np.ndarray):
+        """Converts vector vec[...] to vec[j][sym][:]"""
+        vec_dict = {}
+        offset = 0
+        for j in self.j_list:
+            vec_dict[j] = {}
+            for sym in self.sym_list[j]:
+                d = self.dim_k[j][sym] * self.dim_m[j]
+                vec_dict[j][sym] = vec[offset : offset + d]
+                offset += d
+        return vec_dict
+
+    def _dict_to_vec(self, vec_dict) -> np.ndarray:
+        """Converts vector vec[j][sym][:] to vec[...]"""
+        blocks = []
+        for j in self.j_list:
+            for sym in self.sym_list[j]:
+                blocks.append(vec_dict[j][sym])
+        return np.concatenate(blocks)
 
 
 def _gmat(masses, xyz):
@@ -368,7 +654,7 @@ def _moment_of_inertia(masses, xyz):
 def _rotation_constants(masses, xyz):
     imat = _moment_of_inertia(masses, xyz)
     d, v = np.linalg.eigh(imat)
-    a, b, c = 0.5 / d * G_to_invcm
+    a, b, c = 0.5 / d * G_TO_INVCM
     return (a, b, c), v
 
 
