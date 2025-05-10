@@ -49,10 +49,13 @@ class RotStates:
     vec: defaultdict[int, defaultdict[str, np.ndarray]]
     r_ind: defaultdict[int, defaultdict[str, np.ndarray]]
     v_ind: defaultdict[int, defaultdict[str, np.ndarray]]
+    jktau_list: dict[int, list[tuple[int, int, int, str]]]
 
     dim_k: dict[int, dict[str, int]] = field(init=False)
     dim_m: dict[int, int] = field(init=False)
     mk_ind: dict[int, dict[str, list[tuple[int, int]]]] = field(init=False)
+    quanta_dict: dict[int, dict[str, list[tuple[float]]]] = field(init=False)
+    quanta: np.ndarray = field(init=False)
 
     def __post_init__(self):
         self.dim_m = {j: 2 * j + 1 for j in self.j_list}
@@ -60,17 +63,39 @@ class RotStates:
             j: {sym: len(self.enr[j][sym]) for sym in self.sym_list[j]}
             for j in self.j_list
         }
+
         self.mk_ind = {
             j: {
                 sym: [
-                    (m, k)
-                    for m in range(self.dim_m[j])
-                    for k in range(self.dim_k[j][sym])
+                    (im, ik)
+                    for im in range(self.dim_m[j])
+                    for ik in range(self.dim_k[j][sym])
                 ]
                 for sym in self.sym_list[j]
             }
             for j in self.j_list
         }
+
+        self.quanta_dict = {}
+        for j in self.j_list:
+            quanta_sym = {}
+            for sym in self.sym_list[j]:
+                e = self.enr[j][sym]
+                v = self.vec[j][sym]
+                jktau = [self.jktau_list[j][i] for i in self.r_ind[j][sym]]
+                k_qua = []
+                for i in range(len(e)):
+                    ind = np.argmax(v[:, i] ** 2)
+                    k_qua.append((*jktau[ind], v[ind, i]))
+                qua = [
+                    (j, m, k, tau, sym, c)
+                    for m in range(-j, j + 1)
+                    for (j, k, tau, sym, c) in k_qua
+                ]
+                quanta_sym[sym] = qua
+            self.quanta_dict[j] = quanta_sym
+
+        self.quanta = self._dict_to_vec(self.quanta_dict)
 
     @classmethod
     def from_geometry(
@@ -237,7 +262,9 @@ class RotStates:
                         f"{v[ind, i] ** 2:10.5f}"
                     )
 
-        return cls(masses, xyz, linear, j_list, sym_list, enr, vec, r_ind, v_ind)
+        return cls(
+            masses, xyz, linear, j_list, sym_list, enr, vec, r_ind, v_ind, jktau_list
+        )
 
     def mat(self):
         e0 = []
@@ -547,7 +574,9 @@ class RotStates:
         den_kv = np.einsum(
             "vlg,vng->lng", np.conj(rot_kv1[vi1]), rot_kv2[vi2], optimize="optimal"
         )
-        den_m = np.einsum("lg,ng->lng", np.conj(rot_m1[im1]), rot_m2[im2], optimize="optimal")
+        den_m = np.einsum(
+            "lg,ng->lng", np.conj(rot_m1[im1]), rot_m2[im2], optimize="optimal"
+        )
         den_l = np.einsum("lg,ng->lng", np.conj(rot_l1), rot_l2, optimize="optimal")
 
         dens = np.einsum(
