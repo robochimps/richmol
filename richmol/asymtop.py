@@ -1,19 +1,18 @@
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Callable
 
 import jax
 import numpy as np
 from jax import numpy as jnp
 from mendeleev import element
-from scipy import constants, stats
+from scipy import constants
 from scipy.interpolate import RegularGridInterpolator
 from scipy.sparse import csr_array, diags
 from scipy.spatial.transform import Rotation
 
 from .symmetry import SymmetryType
-from .symtop import rotme_rot, rotme_rot_diag, symtop_on_grid_split_angles
+from .symtop import rotme_rot, symtop_on_grid_split_angles
 from .units import UnitType
 
 jax.config.update("jax_enable_x64", True)
@@ -284,8 +283,8 @@ class RotStates:
         beta: np.ndarray = np.linspace(0, np.pi, 30),
         gamma: np.ndarray = np.linspace(0, 2 * np.pi, 30),
         npoints: int = 1000000,
-        tol: float = 1e-12,
-    ):
+        tol: float = 1e-8,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Calculates expectation values of angular observables for a wavepacket
         using Metropolis sampling approach.
 
@@ -314,15 +313,18 @@ class RotStates:
                 Default is [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], i.e., YZ-plane.
 
             alpha (np.ndarray, optional):
-                1D array of alpha Euler angles in radians.
+                1D array of alpha Euler angles in radians, used for computing
+                of rotational density.
                 Default is np.linspace(0, 2 * np.pi, 30).
 
             beta (np.ndarray, optional):
-                1D array of beta Euler angles in radians.
+                1D array of beta Euler angles in radians, used for computing
+                of rotational density.
                 Default is np.linspace(0, np.pi, 30).
 
             gamma (np.ndarray, optional):
-                1D array of gamma Euler angles in radians.
+                1D array of gamma Euler angles in radians, used for computing
+                of rotational density.
                 Default is np.linspace(0, 2 * np.pi, 30).
 
             npoints (int, optional):
@@ -331,20 +333,18 @@ class RotStates:
 
             tol (float, optional):
                 Coefficients with magnitudes below this threshold are ignored.
-                Default is 1e-12.
+                Default is 1e-8.
 
-        !TODO: check return doc
         Returns:
             tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-                A tuple containing the following lists of arrays:
-                - costheta: List of cos(theta) expectation values for each time step.
-                - cos2theta: List of cos^2(theta) expectation values for each time step.
-                - costheta2d: List of cos(theta_2D) expectation values for each time step.
-                - cos2theta2d: List of cos^2(theta_2D) expectation values for each time step.
+                A tuple containing the following arrays:
+                - costheta: cos(theta) expectation values along the second dimension
+                    of wavepacket coefficients `coefs`.
+                - cos2theta: cos^2(theta) expectation values along the second dimension of `coefs`.
+                - costheta2d: cos(theta_2D) expectation values along the second dimension of `coefs`.
+                - cos2theta2d: cos^2(theta_2D) expectation values along the second dimension of `coefs`.
         """
-        print("compute density")
         dens = self.rot_dens_wp(coefs, alpha, beta, gamma, tol=tol)
-        print("interpolate density")
         fdens = RegularGridInterpolator((alpha, beta, gamma), dens)
         max_dens = np.max(dens, axis=(0, 1, 2))
         pts = np.random.uniform(
@@ -392,10 +392,10 @@ class RotStates:
 
         # cos of theta between molecular axis `mol_axis` and laboratory axis `lab_axis`
         # and its projection onto laboratory plane `lab_plane`
-        costheta = [np.mean(elem) for elem in mol_axis_lab_axis]
-        cos2theta = [np.mean(elem**2) for elem in mol_axis_lab_axis]
-        costheta2d = [np.mean(elem) for elem in mol_axis_lab_axis_plane]
-        cos2theta2d = [np.mean(elem**2) for elem in mol_axis_lab_axis_plane]
+        costheta = np.array([np.mean(elem) for elem in mol_axis_lab_axis])
+        cos2theta = np.array([np.mean(elem**2) for elem in mol_axis_lab_axis])
+        costheta2d = np.array([np.mean(elem) for elem in mol_axis_lab_axis_plane])
+        cos2theta2d = np.array([np.mean(elem**2) for elem in mol_axis_lab_axis_plane])
 
         return costheta, cos2theta, costheta2d, cos2theta2d
 
@@ -405,7 +405,7 @@ class RotStates:
         alpha: np.ndarray = np.linspace(0, 2 * np.pi, 30),
         beta: np.ndarray = np.linspace(0, np.pi, 30),
         gamma: np.ndarray = np.linspace(0, 2 * np.pi, 30),
-        tol=1e-12,
+        tol=1e-8,
     ) -> np.ndarray:
         """Computes the reduced rotational probability density of a wavepacket
         as a function of Euler angles α, β, γ.
@@ -431,14 +431,14 @@ class RotStates:
 
             tol (float, optional):
                 Coefficients with magnitudes below this threshold are ignored.
-                Default is 1e-12.
+                Default is 1e-8.
 
         Returns:
             np.ndarray:
                 An array of shape (len(alpha), len(beta), len(gamma), ...) representing
                 the reduced rotational probability density on the Euler angle grid.
                 The trailing dimensions match `coefs.shape[1:]` or equal to 1
-                if `coefs` has only one dimension.
+                if `coefs` has only a single dimension.
         """
         na = len(alpha)
         nb = len(beta)
