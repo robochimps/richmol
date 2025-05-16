@@ -147,7 +147,7 @@ class RotStates:
         atom_labels, atom_xyz, atom_masses, units, sym_label = _parse_input(inp)
 
         atom_masses = [
-            mass if mass != None else _atom_mass(labes)
+            mass if mass != None else atom_mass(labes)
             for mass, labes in zip(atom_masses, atom_labels)
         ]
 
@@ -191,19 +191,21 @@ class RotStates:
         com = masses @ xyz / jnp.sum(masses)
         xyz -= com[None, :]
 
-        linear = _check_linear(xyz)
+        linear = check_linear(xyz)
         if linear:
             print("Molecule is linear")
 
-        gmat = _gmat(masses, xyz)[:3, :3]
-        u, sv, v = np.linalg.svd(gmat, full_matrices=True)
+        g = gmat(masses, xyz)[:3, :3]
+        u, sv, v = np.linalg.svd(g, full_matrices=True)
         d = np.where(sv > G_SING_TOL, 1 / sv, 0)
 
         nnz = np.count_nonzero(d == 0)
         if (nnz == 1 and not linear) or nnz > 1:
             raise ValueError(f"Kinetic energy g-matrix is singular") from None
 
-        gmat = (u @ np.diag(d) @ v) * G_TO_INVCM
+        G = (u @ np.diag(d) @ v) * G_TO_INVCM
+
+        print("G-matrix (cm^-1):\n", G)
 
         # matrix elements of JxJy
 
@@ -223,7 +225,7 @@ class RotStates:
             me, k_list[j], jktau_list[j] = rotme_rot(j=j, linear=linear, sym=sym)
 
             # matrix elements of KEO
-            ham = 0.5 * np.einsum("ab,abij->ij", gmat, me, optimize="optimal")
+            ham = 0.5 * np.einsum("ab,abij->ij", G, me, optimize="optimal")
 
             for irrep in sym.irreps:
                 print(f"solve for J = {j} and symmetry {irrep} ...")
@@ -242,7 +244,7 @@ class RotStates:
         # print solutions
 
         print(
-            f"{'J':>3} {'Irrep':>5} {'i':>4} {'Energy (E)':>18} {'(J,k,tau,Irrep)':>20} {'c_max²':>10}"
+            f"{'J':>3} {'Irrep':>5} {'i':>4} {'Energy (E)':>18} {'(J,k,tau,Irrep)':>20} {'c_max²':>16}"
         )
 
         for j in j_list:
@@ -251,15 +253,22 @@ class RotStates:
                 v = vec[j][irrep]
                 jktau = [jktau_list[j][i] for i in r_ind[j][irrep]]
                 for i in range(len(e)):
-                    ind = np.argmax(v[:, i] ** 2)
-                    print(
-                        f"{j:3d} "
-                        f"{irrep:>5} "
-                        f"{i:4d} "
-                        f"{e[i]:18.8f} "
-                        f"{str(jktau[ind]):>20} "
-                        f"{v[ind, i] ** 2:10.5f}"
-                    )
+                    v2 = v[:, i] ** 2
+                    largest_ind = np.argsort(v2)[-3:][::-1]
+                    for ii, ind in enumerate(largest_ind):
+                        if ii == 0:
+                            print(
+                                f"{j:3d} "
+                                f"{irrep:>5} "
+                                f"{i:4d} "
+                                f"{e[i]:18.8f} "
+                                f"{str(jktau[ind]):>20} "
+                                f"{v2[ind]:16.12f}"
+                            )
+                        else:
+                            print(
+                                " " * 33, f"{str(jktau[ind]):>20} " f"{v2[ind]:16.12f}"
+                            )
 
         return cls(
             masses, xyz, linear, j_list, sym_list, enr, vec, r_ind, v_ind, jktau_list
@@ -633,7 +642,7 @@ class RotStates:
         return np.concatenate(blocks)
 
 
-def _gmat(masses, xyz):
+def gmat(masses, xyz):
     t_rot = np.transpose(EPS @ np.asarray(xyz).T, (2, 0, 1))
     t_tra = np.array([np.eye(3, dtype=np.float64) for _ in range(len(xyz))])
     t = np.concatenate((t_rot, t_tra), axis=2)
@@ -643,7 +652,7 @@ def _gmat(masses, xyz):
     return t.T @ t
 
 
-def _check_linear(xyz, tol=1e-8):
+def check_linear(xyz, tol=1e-8):
     if len(xyz) < 2:
         return True
     v0 = xyz[1] - xyz[0]
@@ -653,7 +662,7 @@ def _check_linear(xyz, tol=1e-8):
     return True
 
 
-def _moment_of_inertia(masses, xyz):
+def inertia_tensor(masses, xyz):
     cm = np.sum([x * m for x, m in zip(xyz, masses)], axis=0) / np.sum(masses)
     xyz = xyz - cm[None, :]
     imat = np.zeros((3, 3), dtype=np.float64)
@@ -680,14 +689,14 @@ def _moment_of_inertia(masses, xyz):
     return imat
 
 
-def _rotation_constants(masses, xyz):
-    imat = _moment_of_inertia(masses, xyz)
+def rotational_constants(masses, xyz):
+    imat = inertia_tensor(masses, xyz)
     d, v = np.linalg.eigh(imat)
     a, b, c = 0.5 / d * G_TO_INVCM
     return (a, b, c), v
 
 
-def _atom_mass(atom_label: str) -> float:
+def atom_mass(atom_label: str) -> float:
     match = re.match(r"^([A-Z][a-z]*)(\d*)$", atom_label)
     if not match:
         raise ValueError(f"Invalid atom label: {atom_label}")
