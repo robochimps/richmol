@@ -53,7 +53,17 @@ class RotStates:
     dim_k: dict[int, dict[str, int]] = field(init=False)
     dim_m: dict[int, int] = field(init=False)
     mk_ind: dict[int, dict[str, list[tuple[int, int]]]] = field(init=False)
+
+    # quanta_dict[j][sym][n] = (j, m, k, tau, sym, c),
+    #   where n runs across dim_m[j] -> dim_k[j][sym]
     quanta_dict: dict[int, dict[str, list[tuple[float]]]] = field(init=False)
+
+    # quanta_dict_k[j][sym][n] = (j, k, tau, sym, c),
+    #   where n runs across dim_k[j][sym]
+    quanta_dict_k: dict[int, dict[str, list[tuple[float]]]] = field(init=False)
+
+    # quanta[n] = (j, m, k, tau, sym, c),
+    #   where n runs across j -> sym -> dim_m[j] -> dim_k[j][sym]
     quanta: np.ndarray = field(init=False)
 
     def __post_init__(self):
@@ -75,25 +85,26 @@ class RotStates:
             for j in self.j_list
         }
 
+        # state assignment
+
         self.quanta_dict = {}
+        self.quanta_dict_k = {}
         for j in self.j_list:
             quanta_sym = {}
+            quanta_sym_k = {}
             for sym in self.sym_list[j]:
                 e = self.enr[j][sym]
                 v = self.vec[j][sym]
                 jktau = [self.jktau_list[j][i] for i in self.r_ind[j][sym]]
-                k_qua = []
+                qua_k = []
                 for i in range(len(e)):
                     ind = np.argmax(v[:, i] ** 2)
-                    k_qua.append((*jktau[ind], v[ind, i]))
-                qua = [
-                    (j, m, k, tau, sym, c)
-                    for m in range(-j, j + 1)
-                    for (j, k, tau, sym, c) in k_qua
-                ]
-                quanta_sym[sym] = qua
+                    qua_k.append((*jktau[ind], v[ind, i]))
+                qua_mk = [(q[0], m, *q[1:]) for m in range(-j, j + 1) for q in qua_k]
+                quanta_sym[sym] = qua_mk
+                quanta_sym_k[sym] = qua_k
             self.quanta_dict[j] = quanta_sym
-
+            self.quanta_dict_k[j] = quanta_sym_k
         self.quanta = self._dict_to_vec(self.quanta_dict)
 
     @classmethod
@@ -622,7 +633,7 @@ class RotStates:
         return rot_kv, rot_m, rot_l, vib_ind_unique
 
     def _vec_to_dict(self, vec: np.ndarray):
-        """Converts vector vec[...] to vec[j][sym][:]"""
+        """Converts vector vec[n] to vec[j][sym][k] where n runs across j -> sym -> k"""
         vec_dict = {}
         offset = 0
         for j in self.j_list:
@@ -634,7 +645,7 @@ class RotStates:
         return vec_dict
 
     def _dict_to_vec(self, vec_dict) -> np.ndarray:
-        """Converts vector vec[j][sym][:] to vec[...]"""
+        """Converts vector vec[j][sym][k] to vec[n] where n runs across j -> sym -> k"""
         blocks = []
         for j in self.j_list:
             for sym in self.sym_list[j]:
