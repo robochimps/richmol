@@ -1,10 +1,10 @@
 import numpy as np
 import py3nj
 from scipy import constants
-from scipy.sparse import block_array, csr_array, kron
+from scipy.sparse import block_array, csr_array
 
 from .asymtop import RotStates
-from .cartens import CartTensor, Rank2Tensor
+from .cartens import CartTensor, Rank2Tensor, MKTensor
 from .nucspin import *
 
 # Conversion from EFG[a.u.]*Q[mb] to EFG*Q[cm^-1]
@@ -381,33 +381,24 @@ def _quadrupole_me(
     return h
 
 
-class HyperCartTensor:
-    rank: int
-    cart_ind: list[str]
-    kmat: dict[tuple[float, float], dict[tuple[str, str], dict[int, csr_array]]]
-    mmat: dict[tuple[float, float], dict[str, dict[int, csr_array]]]
-    f_list: list[float]
-    f_sym_list: dict[float, list[str]]
-    j_spin_list: dict[
-        float, dict[str, list[tuple[int, tuple[float], str, str, int]]]
-    ]  # (J, spin, rovib_sym, spin_sym, rovib_dim)
-    dim_k: dict[float, dict[str, int]]
-    dim_m: dict[float, int]
-
+class HyperCartTensor(MKTensor):
     def __init__(
         self, states: HyperStates, cart_tens: CartTensor, thresh: float = 1e-12
     ):
-        self.kmat = self._k_tens(states, cart_tens, thresh)
-        self.mmat = self._m_tens(states, cart_tens, thresh)
         self.rank = cart_tens.rank
         self.cart_ind = cart_tens.cart_ind
-        self.f_list = states.f_list
-        self.f_sym_list = states.f_sym_list
-        self.j_spin_list = states.j_spin_list
-        self.dim_m = {f: int(2 * f) + 1 for f in self.f_list}
+        self.spher_ind = cart_tens.spher_ind
+        self.umat_cart_to_spher = cart_tens.umat_cart_to_spher
+        self.umat_spher_to_cart = cart_tens.umat_spher_to_cart
+
+        self.kmat = self._k_tens(states, cart_tens, thresh)
+        self.mmat = self._m_tens(states, thresh)
+        self.j_list = states.f_list
+        self.sym_list = states.f_sym_list
+        self.dim_m = {f: int(2 * f) + 1 for f in self.j_list}
         self.dim_k = {
-            f: {sym: len(states.enr[f][sym]) for sym in self.f_sym_list[f]}
-            for f in self.f_list
+            f: {sym: len(states.enr[f][sym]) for sym in self.sym_list[f]}
+            for f in self.j_list
         }
 
     def _k_tens(self, states, cart_tens, thresh: float):
@@ -460,18 +451,18 @@ class HyperCartTensor:
 
         return k_me
 
-    def _m_tens(self, states, cart_tens, thresh: float):
+    def _m_tens(self, states, thresh: float):
         m_me = {}
         for f1 in states.f_list:
             for f2 in states.f_list:
-                m_list1, m_list2, threej_u = cart_tens._threej_umat_spher_to_cart(
+                m_list1, m_list2, threej_u = self._threej_umat_spher_to_cart(
                     f1, f2, hyperfine=True
                 )
 
                 fac = np.sqrt((2 * f1 + 1) * (2 * f2 + 1))
 
                 me_cart = {}
-                for icart, cart in enumerate(cart_tens.cart_ind):
+                for icart, cart in enumerate(self.cart_ind):
 
                     me_o = {}
                     for omega in threej_u.keys():
@@ -534,77 +525,3 @@ class HyperCartTensor:
         k_me = block_array(k_me)
 
         return k_me
-
-    def mat(self, cart: str) -> csr_array:
-        """Assembles full matrix corresponding to a specific Cartesian component
-        of the tensor operator.
-
-        Args:
-            cart (str):
-                A string indicating the Cartesian component of tensor for which
-                the matrix should be assembled.
-                For example, `cart` can be 'x', 'y', or 'z' for rank-1 tensor,
-                'xx', 'xy', 'xz', 'yz', ..., 'zz' for rank-2 tensor.
-
-        Returns:
-            csr_array:
-                A sparse matrix in CSR format representing the matrix elements
-                of a specific Cartesian component of the tensor.
-        """
-        assert cart in self.cart_ind, (
-            f"Invalid Cartesian component 'cart' = {cart} for tensor of rank = {self.rank}\n"
-            + f"valid components: {self.cart_ind}"
-        )
-        me_j = {}
-        for j1, j2 in list(set(self.mmat.keys()) & set(self.kmat.keys())):
-            try:
-                mmat = self.mmat[(j1, j2)][cart]
-            except KeyError:
-                continue
-
-            kmat_j = self.kmat[(j1, j2)]
-
-            me_sym = {}
-            for (sym1, sym2), kmat in kmat_j.items():
-
-                # M \otimes K
-                me = sum(
-                    kron(mmat[omega], kmat[omega])
-                    for omega in list(set(mmat.keys()) & set(kmat.keys()))
-                )
-
-                if me.nnz > 0:
-                    me_sym[(sym1, sym2)] = me
-
-            if me_sym:
-                me_j[(j1, j2)] = me_sym
-
-        mat = self._dict_to_mat(me_j)
-        return mat
-
-    def _dict_to_mat(self, mat_dict) -> csr_array:
-        """Converts matrix mat[(j1, j2)][(sym1, sym2)][:, :] to mat[...]"""
-        mat = block_array(
-            [
-                [
-                    (
-                        mat_dict[(j1, j2)][(sym1, sym2)]
-                        if (j1, j2) in mat_dict.keys()
-                        and (sym1, sym2) in mat_dict[(j1, j2)].keys()
-                        else csr_array(
-                            np.zeros(
-                                (
-                                    self.dim_m[j1] * self.dim_k[j1][sym1],
-                                    self.dim_m[j2] * self.dim_k[j2][sym2],
-                                )
-                            )
-                        )
-                    )
-                    for j2 in self.f_list
-                    for sym2 in self.f_sym_list[j2]
-                ]
-                for j1 in self.f_list
-                for sym1 in self.f_sym_list[j1]
-            ]
-        )
-        return mat

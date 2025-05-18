@@ -9,6 +9,8 @@ from scipy.sparse import block_array, csr_array, kron
 from .asymtop import RotStates
 from .symtop import wang_coefs
 
+# Collection of spherical spherical tensors for different ranks
+#   _TENSORS[rank] = dataclass
 _TENSORS: dict[int, type] = {}
 
 
@@ -141,74 +143,29 @@ class Rank2Tensor:
             self.umat_spher_to_cart[om] = umat_spher_to_cart[:, sigma_ind]
 
 
-class CartTensor:
+class MKTensor:
+    """Generic Cartesian tensor class"""
+
     rank: int
     cart_ind: list[str]
     spher_ind: list[tuple[int, int]]
     umat_cart_to_spher: dict[int, np.ndarray]
     umat_spher_to_cart: dict[int, np.ndarray]
+
+    j_list: list[int | float]
+    sym_list: dict[int | float, list[str]]  # sym_list[j]
+    dim_k: dict[int | float, dict[str, int]]  # dim_k[j][sym]
+    dim_m: dict[int | float, int]  # dim_m[j]
+
+    # kmat[(j1, j2)][(sym1, sym2)][omega] -> csr_array(k', k),
+    #   where k, k' span rotational or rovibrational basis
     kmat: dict[
-        tuple[int, int], dict[tuple[str, str], dict[int, csr_array]]
-    ]  # [(j1, j2)][(sym1, sym2)][omega][{kv1, kv2}]
-    mmat: dict[
-        tuple[int, int], dict[str, dict[int, csr_array]]
-    ]  # [(j1, j2)][A][omega][{m1, m2}]
-    j_list: list[int]
-    sym_list: dict[int, list[str]]
-    dim_k: dict[int, dict[str, int]]
-    dim_m: dict[int, int]
+        tuple[int | float, int | float], dict[tuple[str, str], dict[int, csr_array]]
+    ]
 
-    def __init__(
-        self,
-        states: RotStates,
-        mol_tens: np.ndarray,
-        vib: bool = False,
-        tol: float = 1e-12,
-    ):
-        if not isinstance(mol_tens, np.ndarray):
-            mol_tens = np.array(mol_tens)
-
-        if vib:  # first two dimensions are vibrational quanta
-            if mol_tens.ndim < 3:
-                raise ValueError(
-                    f"Since 'vib' = {vib}, tensor 'mol_tens' must have at least 3 dimensions "
-                    + f"(vib basis, vib basis, 3 ...), got shape = {mol_tens.shape}"
-                )
-
-            if not all(dim == 3 for dim in mol_tens.shape[2:]):
-                raise ValueError(
-                    f"Since 'vib' = {vib}, all dimensions of 'mol_tens' starting from the third "
-                    + f"must be size 3, got shape = {mol_tens.shape}"
-                )
-
-            rank = mol_tens.ndim - 2
-
-        else:
-            if not all(dim == 3 for dim in mol_tens.shape):
-                raise ValueError(
-                    f"Since 'vib' = {vib}, all dimensions of 'mol_tens' must be size 3, "
-                    + f"got shape = {mol_tens.shape}"
-                )
-
-            rank = mol_tens.ndim
-            mol_tens = np.array(mol_tens)[np.newaxis, np.newaxis, ...]
-
-        if rank in _TENSORS:
-            tens = _TENSORS[rank]()
-            for f in fields(tens):
-                setattr(self, f.name, getattr(tens, f.name))
-        else:
-            raise ValueError(f"Cartesian tensor for rank = {rank} is not implemented")
-
-        self.kmat = self._k_tens(states, mol_tens, tol)
-        self.mmat = self._m_tens(states, tol)
-        self.j_list = states.j_list
-        self.sym_list = states.sym_list
-        self.dim_m = {j: 2 * j + 1 for j in self.j_list}
-        self.dim_k = {
-            j: {sym: len(states.enr[j][sym]) for sym in self.sym_list[j]}
-            for j in self.j_list
-        }
+    # mmat[(j1, j2)][A][omega] -> csr_array(m', m),
+    #   where m' = -j1 .. j1, m = -j2 .. j2
+    mmat: dict[tuple[int | float, int | float], dict[str, dict[int, csr_array]]]
 
     def mat(self, cart: str) -> csr_array:
         """Assembles full matrix corresponding to a specific Cartesian component
@@ -384,7 +341,177 @@ class CartTensor:
                 mf[(j1, j2)] = mf_o
         return mf
 
-    def _m_tens(self, states, tol: float):
+    def _vec_to_dict(self, vec: np.ndarray):
+        """Converts vector vec[n] to vec[j][sym][k] where n runs across j -> sym -> k"""
+        vec_dict = {}
+        offset = 0
+        for j in self.j_list:
+            vec_dict[j] = {}
+            for sym in self.sym_list[j]:
+                d = self.dim_k[j][sym] * self.dim_m[j]
+                vec_dict[j][sym] = vec[offset : offset + d]
+                offset += d
+        return vec_dict
+
+    def _dict_to_vec(self, vec_dict) -> np.ndarray:
+        """Converts vector vec[j][sym][k] to vec[n] where n runs across j -> sym -> k"""
+        blocks = []
+        for j in self.j_list:
+            for sym in self.sym_list[j]:
+                blocks.append(vec_dict[j][sym])
+        return np.concatenate(blocks)
+
+    def _dict_to_mat(self, mat_dict) -> csr_array:
+        """Converts matrix mat[(j1, j2)][(sym1, sym2)][k, l] to mat[n, m]
+        where n, m run across j1, j2 -> sym1, sym2 -> k, l
+        """
+        mat = block_array(
+            [
+                [
+                    (
+                        mat_dict[(j1, j2)][(sym1, sym2)]
+                        if (j1, j2) in mat_dict.keys()
+                        and (sym1, sym2) in mat_dict[(j1, j2)].keys()
+                        else csr_array(
+                            np.zeros(
+                                (
+                                    self.dim_m[j1] * self.dim_k[j1][sym1],
+                                    self.dim_m[j2] * self.dim_k[j2][sym2],
+                                )
+                            )
+                        )
+                    )
+                    for j2 in self.j_list
+                    for sym2 in self.sym_list[j2]
+                ]
+                for j1 in self.j_list
+                for sym1 in self.sym_list[j1]
+            ]
+        )
+        return mat
+
+    def _threej_umat_spher_to_cart(
+        self, j1: int | float, j2: int | float, hyperfine: bool = False
+    ):
+        r"""Computes three-j symbol contracted with tensor's spherical-to-Cartesian
+        transformation:
+
+            (-1)^p \sum_{\sigma=-\omega}^{\omega}
+                threej(J, \omega, J', m, \sigma, -m')
+                [U^{(\Omega)}]^{-1}_{A,\omega\sigma},
+
+        where p = m' in case of rotational basis
+        or p = m'-j-omega for hyperfine basis, i.e., when `hyperfine` = True.
+
+        Here, |j1, m'=-j1..j1> are bra states, and |j2, m=-j2..j2> are ket states.
+        """
+        m_list1 = np.arange(-j1, j1 + 1)
+        m_list2 = np.arange(-j2, j2 + 1)
+        m1 = np.array(m_list1)
+        m2 = np.array(m_list2)
+        m12 = np.concatenate(
+            (
+                m1[:, None, None].repeat(len(m2), axis=1),
+                m2[None, :, None].repeat(len(m1), axis=0),
+            ),
+            axis=-1,
+        ).reshape(-1, 2)
+        n = len(m12)
+        m12_1 = m12[:, 0]
+        m12_2 = m12[:, 1]
+        two_m12_1 = m12_1 * 2
+        two_m12_2 = m12_2 * 2
+
+        threej = {
+            omega: np.zeros((2 * omega + 1, len(m1), len(m2)), dtype=np.complex128)
+            for omega in self.umat_spher_to_cart.keys()
+        }
+        for omega, sigma in self.spher_ind:
+            if hyperfine:
+                fac = np.abs(m12_1 - j2 - omega)
+            else:
+                fac = np.abs(m12_1)
+            assert np.all(
+                np.isclose(fac % 1, 0)
+            ), f"Non-integer power in (-1)**f: (-1)**{fac}"
+            fac = fac.astype(int)
+
+            thrj = (-1) ** fac * wigner3j(
+                [int(j2 * 2)] * n,
+                [omega * 2] * n,
+                [int(j1 * 2)] * n,
+                two_m12_2.astype(int),
+                [sigma * 2] * n,
+                -two_m12_1.astype(int),
+                ignore_invalid=True,
+            )
+            threej[omega][sigma + omega] = thrj.reshape(len(m1), len(m2))
+
+        threej_u = {}
+        for omega in self.umat_spher_to_cart.keys():
+            threej_u[omega] = np.einsum(
+                "sij,cs->ijc",
+                threej[omega],
+                self.umat_spher_to_cart[omega],
+                optimize="optimal",
+            )
+        return m_list1, m_list2, threej_u
+
+
+class CartTensor(MKTensor):
+    def __init__(
+        self,
+        states: RotStates,
+        mol_tens: np.ndarray,
+        vib: bool = False,
+        thresh: float = 1e-12,
+    ):
+        if not isinstance(mol_tens, np.ndarray):
+            mol_tens = np.array(mol_tens)
+
+        if vib:  # first two dimensions are vibrational quanta
+            if mol_tens.ndim < 3:
+                raise ValueError(
+                    f"Since 'vib' = {vib}, tensor 'mol_tens' must have at least 3 dimensions "
+                    + f"(vib basis, vib basis, 3 ...), got shape = {mol_tens.shape}"
+                )
+
+            if not all(dim == 3 for dim in mol_tens.shape[2:]):
+                raise ValueError(
+                    f"Since 'vib' = {vib}, all dimensions of 'mol_tens' starting from the third "
+                    + f"must be size 3, got shape = {mol_tens.shape}"
+                )
+
+            rank = mol_tens.ndim - 2
+
+        else:
+            if not all(dim == 3 for dim in mol_tens.shape):
+                raise ValueError(
+                    f"Since 'vib' = {vib}, all dimensions of 'mol_tens' must be size 3, "
+                    + f"got shape = {mol_tens.shape}"
+                )
+
+            rank = mol_tens.ndim
+            mol_tens = np.array(mol_tens)[np.newaxis, np.newaxis, ...]
+
+        if rank in _TENSORS:
+            tens = _TENSORS[rank]()
+            for f in fields(tens):
+                setattr(self, f.name, getattr(tens, f.name))
+        else:
+            raise ValueError(f"Cartesian tensor for rank = {rank} is not implemented")
+
+        self.kmat = self._k_tens(states, mol_tens, thresh)
+        self.mmat = self._m_tens(states, thresh)
+        self.j_list = states.j_list
+        self.sym_list = states.sym_list
+        self.dim_m = {j: 2 * j + 1 for j in self.j_list}
+        self.dim_k = {
+            j: {sym: len(states.enr[j][sym]) for sym in self.sym_list[j]}
+            for j in self.j_list
+        }
+
+    def _m_tens(self, states, thresh: float):
         r"""Computes M-tensor matrix elements:
 
         M_{A,\omega}^{(J',m',J,m)} = \sqrt{(2J'+1)(2J+1)} (-1)^{m'}
@@ -410,7 +537,7 @@ class CartTensor:
                     me_o = {}
                     for omega in threej_u.keys():
                         me = threej_u[omega][:, :, icart] * fac
-                        me[np.abs(me) < tol] = 0
+                        me[np.abs(me) < thresh] = 0
                         me = csr_array(me)
 
                         if me.nnz > 0:
@@ -423,7 +550,7 @@ class CartTensor:
                     m_me[(j1, j2)] = me_cart
         return m_me
 
-    def _k_tens(self, states, mol_tens, tol: float):
+    def _k_tens(self, states, mol_tens, thresh: float):
         r"""Computes K-tensor matrix elements
 
         K_{\omega}^{(J',l',J,l)} = \sum_{k',v'} \sum_{k,v}
@@ -488,7 +615,7 @@ class CartTensor:
                                 optimize="optimal",
                             )
 
-                            if np.any(np.abs(me) > tol):
+                            if np.any(np.abs(me) > thresh):
                                 me = np.einsum(
                                     "ik,ij,jl->kl",
                                     np.conj(vec1),
@@ -497,7 +624,7 @@ class CartTensor:
                                     optimize="optimal",
                                 )
 
-                                me[np.abs(me) < tol] = 0
+                                me[np.abs(me) < thresh] = 0
                                 me = csr_array(me)
                                 if me.nnz > 0:
                                     k_me_omega[omega] = me
@@ -511,11 +638,11 @@ class CartTensor:
 
     def _threej_umat_cart_to_spher(self, j1: int, j2: int, linear: bool):
         r"""Computes three-j symbol contracted with tensor's Cartesian-to-spherical
-        transformation
+        transformation:
 
-        (-1)^{k'} \sum_{\sigma=-\omega}^{\omega}
-            threej(J, \omega, J', k, \sigma, -k')
-            U_{\omega\sigma,\alpha}^{(\Omega)},
+            (-1)^{k'} \sum_{\sigma=-\omega}^{\omega}
+                threej(J, \omega, J', k, \sigma, -k')
+                U_{\omega\sigma,\alpha}^{(\Omega)},
 
         and transforms the results to Wang's symmetrized representation
         of |J,k,\tau\rangle functions.
@@ -565,114 +692,3 @@ class CartTensor:
                 optimize="optimal",
             )
         return jktau_list1, jktau_list2, threej_wang
-
-    def _threej_umat_spher_to_cart(
-        self, j1: int | float, j2: int | float, hyperfine: bool = False
-    ):
-        r"""Computes three-j symbol contracted with tensor's spherical-to-Cartesian
-        transformation
-
-        (-1)^{m'} \sum_{\sigma=-\omega}^{\omega}
-            threej(J, \omega, J', m, \sigma, -m')
-            [U^{(\Omega)}]^{-1}_{A,\omega\sigma}
-
-        Here, |j1, m'=-j1..j1> are bra states, and |j2, m=-j2..j2> are ket states.
-        """
-        m_list1 = np.arange(-j1, j1 + 1)
-        m_list2 = np.arange(-j2, j2 + 1)
-        m1 = np.array(m_list1)
-        m2 = np.array(m_list2)
-        m12 = np.concatenate(
-            (
-                m1[:, None, None].repeat(len(m2), axis=1),
-                m2[None, :, None].repeat(len(m1), axis=0),
-            ),
-            axis=-1,
-        ).reshape(-1, 2)
-        n = len(m12)
-        m12_1 = m12[:, 0]
-        m12_2 = m12[:, 1]
-        two_m12_1 = m12_1 * 2
-        two_m12_2 = m12_2 * 2
-
-        threej = {
-            omega: np.zeros((2 * omega + 1, len(m1), len(m2)), dtype=np.complex128)
-            for omega in self.umat_spher_to_cart.keys()
-        }
-        for omega, sigma in self.spher_ind:
-            if hyperfine:
-                fac = np.abs(m12_1 - j2 - omega)
-            else:
-                fac = np.abs(m12_1)
-            assert np.all(
-                np.isclose(fac % 1, 0)
-            ), f"Non-integer power in (-1)**f: (-1)**{fac}"
-            fac = fac.astype(int)
-
-            thrj = (-1) ** fac * wigner3j(
-                [int(j2 * 2)] * n,
-                [omega * 2] * n,
-                [int(j1 * 2)] * n,
-                two_m12_2.astype(int),
-                [sigma * 2] * n,
-                -two_m12_1.astype(int),
-                ignore_invalid=True,
-            )
-            threej[omega][sigma + omega] = thrj.reshape(len(m1), len(m2))
-
-        threej_u = {}
-        for omega in self.umat_spher_to_cart.keys():
-            threej_u[omega] = np.einsum(
-                "sij,cs->ijc",
-                threej[omega],
-                self.umat_spher_to_cart[omega],
-                optimize="optimal",
-            )
-        return m_list1, m_list2, threej_u
-
-    def _vec_to_dict(self, vec: np.ndarray):
-        """Converts vector vec[...] to vec[j][sym][:]"""
-        vec_dict = {}
-        offset = 0
-        for j in self.j_list:
-            vec_dict[j] = {}
-            for sym in self.sym_list[j]:
-                d = self.dim_k[j][sym] * self.dim_m[j]
-                vec_dict[j][sym] = vec[offset : offset + d]
-                offset += d
-        return vec_dict
-
-    def _dict_to_vec(self, vec_dict) -> np.ndarray:
-        """Converts vector vec[j][sym][:] to vec[...]"""
-        blocks = []
-        for j in self.j_list:
-            for sym in self.sym_list[j]:
-                blocks.append(vec_dict[j][sym])
-        return np.concatenate(blocks)
-
-    def _dict_to_mat(self, mat_dict) -> csr_array:
-        """Converts matrix mat[(j1, j2)][(sym1, sym2)][:, :] to mat[...]"""
-        mat = block_array(
-            [
-                [
-                    (
-                        mat_dict[(j1, j2)][(sym1, sym2)]
-                        if (j1, j2) in mat_dict.keys()
-                        and (sym1, sym2) in mat_dict[(j1, j2)].keys()
-                        else csr_array(
-                            np.zeros(
-                                (
-                                    self.dim_m[j1] * self.dim_k[j1][sym1],
-                                    self.dim_m[j2] * self.dim_k[j2][sym2],
-                                )
-                            )
-                        )
-                    )
-                    for j2 in self.j_list
-                    for sym2 in self.sym_list[j2]
-                ]
-                for j1 in self.j_list
-                for sym1 in self.sym_list[j1]
-            ]
-        )
-        return mat
