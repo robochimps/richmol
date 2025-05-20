@@ -283,7 +283,7 @@ class MKTensor:
 
         vec2 = {}
 
-        for j1, j2 in list(set(mf) & set(self.kmat.keys())):
+        for j1, j2 in list(set(mf.keys()) & set(self.kmat.keys())):
             mfmat = mf[(j1, j2)]
             kmat_j = self.kmat[(j1, j2)]
             dim_m1 = self.dim_m[j1]
