@@ -1,7 +1,7 @@
 import numpy as np
 import py3nj
 from scipy import constants
-from scipy.sparse import block_array, csr_array
+from scipy.sparse import block_array, csr_array, diags
 
 from .asymtop import RotStates
 from .cartens import CartTensor, Rank2Tensor, MKTensor
@@ -29,16 +29,18 @@ def _symmetry_spin_rotation_placeholder(
     sym_list = list(
         set([sym for sym_list in list(j_sym_list.values()) for sym in sym_list])
     )
-    assert sym_list == ["A"], (
-        "The placeholder spin-rotation symmetrization function works only for C1 spatial symmetry group,\n"
-        + f"i.e., no symmetry, instead got spatial symmetries: {sym_list}"
-    )
+
+    # assert sym_list == ["A"], (
+    #     "The placeholder spin-rotation symmetrization function works only for C1 spatial symmetry group,\n"
+    #     + f"i.e., no symmetry, instead got spatial symmetries: {sym_list}"
+    # )
+
     j_spin_list = {}
     for j, spin in zip(j_list, spin_list):
         for j_sym in j_sym_list[j]:
             ##########
             # f_sym = ... # code symmetry spin-spatial symmetry products
-            f_sym = j_sym
+            f_sym = "A"  # j_sym
             spin_sym = "A"
             ##########
             try:
@@ -109,6 +111,7 @@ class HyperStates:
         states: RotStates,
         spin_op: list[SpinOperator],
         efg_op: list[CartTensor | None] = [],
+        symmetry_rules = _symmetry_spin_rotation_placeholder,
     ):
         print("\nCompute hyperfine states")
 
@@ -156,7 +159,7 @@ class HyperStates:
         for f in self.f_list:
             spin_list, j_list = near_equal_coupling_with_rotations(f, spin_op)
             j_sym_list = states.sym_list
-            j_spin_list = _symmetry_spin_rotation_placeholder(
+            j_spin_list = symmetry_rules(
                 j_list, j_sym_list, spin_list
             )
             self.f_sym_list[f] = list(j_spin_list.keys())
@@ -296,6 +299,14 @@ class HyperStates:
             self.quanta_dict[f] = quanta_sym
             self.quanta_dict_k[f] = quanta_sym_k
         self.quanta = self._dict_to_vec(self.quanta_dict)
+
+    def mat(self):
+        e0 = []
+        for f in self.f_list:
+            for sym in self.f_sym_list[f]:
+                for m in np.arange(-f, f + 1):
+                    e0.append(self.enr[f][sym])
+        return csr_array(diags(np.concatenate(e0)))
 
     def _vec_to_dict(self, vec: np.ndarray):
         """Converts vector vec[n] to vec[f][sym][k] where n runs across f -> sym -> k"""
