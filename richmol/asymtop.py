@@ -112,16 +112,23 @@ class RotStates:
         cls,
         max_j: int,
         inp,
+        print_states: bool = False,
     ):
         """Computes rigid rotor states from a given molecular geometry.
 
         Args:
             max_j (int):
                 Maximum rotational angular momentum quantum number (J).
-                Rotational states will be computed for all values from J = 0 up to J = max_j.
+                Rotational states will be computed for all values from J = 0 up to J = `max_j`.
+
             inp (list or tuple):
                 A specification of the molecular geometry, including atomic positions, units,
-                optional mass assignments, and symmetry labels. Examples are shown below.
+                optional mass assignments, and symmetry label. Examples are shown below.
+
+            print_states (bool, optional):
+                If True, prints a table of computed rotational energy levels and 
+                their corresponding quantum state assignments.
+                Default is False.
 
         Examples of 'inp':
 
@@ -254,32 +261,32 @@ class RotStates:
 
         # print solutions
 
-        print(
-            f"{'J':>3} {'Irrep':>5} {'i':>4} {'Energy (E)':>18} {'(J,k,tau,Irrep)':>20} {'c_max²':>16}"
-        )
-
-        for j in j_list:
-            for irrep in sym_list[j]:
-                e = enr[j][irrep]
-                v = vec[j][irrep]
-                jktau = [jktau_list[j][i] for i in r_ind[j][irrep]]
-                for i in range(len(e)):
-                    v2 = v[:, i] ** 2
-                    largest_ind = np.argsort(v2)[-3:][::-1]
-                    for ii, ind in enumerate(largest_ind):
-                        if ii == 0:
-                            print(
-                                f"{j:3d} "
-                                f"{irrep:>5} "
-                                f"{i:4d} "
-                                f"{e[i]:18.8f} "
-                                f"{str(jktau[ind]):>20} "
-                                f"{v2[ind]:16.12f}"
-                            )
-                        else:
-                            print(
-                                " " * 33, f"{str(jktau[ind]):>20} " f"{v2[ind]:16.12f}"
-                            )
+        if print_states:
+            print(
+                f"{'J':>3} {'Irrep':>5} {'i':>4} {'Energy (E)':>18} {'(J,k,tau,Irrep)':>20} {'c_max²':>16}"
+            )
+            for j in j_list:
+                for irrep in sym_list[j]:
+                    e = enr[j][irrep]
+                    v = vec[j][irrep]
+                    jktau = [jktau_list[j][i] for i in r_ind[j][irrep]]
+                    for i in range(len(e)):
+                        v2 = v[:, i] ** 2
+                        largest_ind = np.argsort(v2)[-3:][::-1]
+                        for ii, ind in enumerate(largest_ind):
+                            if ii == 0:
+                                print(
+                                    f"{j:3d} "
+                                    f"{irrep:>5} "
+                                    f"{i:4d} "
+                                    f"{e[i]:18.8f} "
+                                    f"{str(jktau[ind]):>20} "
+                                    f"{v2[ind]:16.12f}"
+                                )
+                            else:
+                                print(
+                                    " " * 33, f"{str(jktau[ind]):>20} " f"{v2[ind]:16.12f}"
+                                )
 
         return cls(
             masses, xyz, linear, j_list, sym_list, enr, vec, r_ind, v_ind, jktau_list
