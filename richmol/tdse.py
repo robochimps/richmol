@@ -10,6 +10,74 @@ from .cartens import CartTensor
 from .constants import ENR_INVCM_JOULE
 
 
+def propagate_expm(
+    states: RotStates,
+    tens_op: list[CartTensor],
+    tens_prefac: list[float],
+    field_func: Callable[[float], np.ndarray],
+    t0: float,
+    t1: float,
+    dt: float,
+    time_unit: str,
+    c0: np.ndarray,
+    split_method: bool = True,
+    field_tol: float = 1e-12,
+):
+    time_units = {"ps": 1e-12, "fs": 1e-15, "ns": 1e-9}
+    assert time_unit.lower() in time_units, (
+        f"Unknown value for 'time_unit' = {time_unit}, "
+        + f"accepted values: {list(time_units.keys())}"
+    )
+
+    h0 = states.mat()
+
+    fac = (
+        -1j
+        * dt
+        * np.array([1] + tens_prefac)
+        * ENR_INVCM_JOULE
+        / constants.value("reduced Planck constant")
+        * time_units[time_unit]
+    )
+
+    h0_exp = np.exp(0.5 * fac[0] * h0.diagonal())
+
+    def rhs(c, field):
+        if c.ndim == 1:
+            c_ = c
+        else:
+            c_ = c[:, 0]
+        c2 = np.sum(
+            [f * tens.mat_vec(field, c_) for f, tens in zip(fac[1:], tens_op)], axis=0
+        )
+        if not split_method:
+            c2 += fac[0] * h0.dot(c_)
+        if c.ndim == 1:
+            return c2
+        else:
+            return np.array([c2]).T
+
+    nt = int((t1 - t0) / dt)
+    time = np.linspace(t0, t1, nt)
+    c = c0.copy()
+    c_t = []
+    for t in time:
+        field = field_func(t)
+        rhs_t = lambda c: rhs(c, field)
+        H = LinearOperator(shape=h0.shape, dtype=complex, matvec=rhs_t, rmatvec=rhs_t)
+        if split_method:
+            c = c * h0_exp
+            if np.linalg.norm(field) > field_tol:
+                c = expm_multiply(H, c)
+            c = c * h0_exp
+        else:
+            c = expm_multiply(H, c)
+        c_t.append(c)
+    c_t = np.array(c_t)
+
+    return time, c_t
+
+
 def propagate_rk(
     states: RotStates,
     tens_op: list[CartTensor],
@@ -105,6 +173,7 @@ def propagate_rk(
         c2 = fac[0] * h0.dot(c)
         for f, tens in zip(fac[1:], tens_op):
             c2 += f * tens.mat_vec(field, c)
+        # c2 = c2 / np.linalg.norm(c2)
         return c2.view(np.float64)
 
     c0_real = c0.view(np.float64)
