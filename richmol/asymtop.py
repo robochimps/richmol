@@ -75,11 +75,13 @@ class RotStates:
 
         self.mk_ind = {
             j: {
-                sym: [
-                    (im, ik)
-                    for im in range(self.dim_m[j])
-                    for ik in range(self.dim_k[j][sym])
-                ]
+                sym: np.array(
+                    [
+                        (im, ik)
+                        for im in range(self.dim_m[j])
+                        for ik in range(self.dim_k[j][sym])
+                    ]
+                )
                 for sym in self.sym_list[j]
             }
             for j in self.j_list
@@ -126,7 +128,7 @@ class RotStates:
                 optional mass assignments, and symmetry label. Examples are shown below.
 
             print_states (bool, optional):
-                If True, prints a table of computed rotational energy levels and 
+                If True, prints a table of computed rotational energy levels and
                 their corresponding quantum state assignments.
                 Default is False.
 
@@ -285,7 +287,8 @@ class RotStates:
                                 )
                             else:
                                 print(
-                                    " " * 33, f"{str(jktau[ind]):>20} " f"{v2[ind]:16.12f}"
+                                    " " * 33,
+                                    f"{str(jktau[ind]):>20} " f"{v2[ind]:16.12f}",
                                 )
 
         return cls(
@@ -310,7 +313,7 @@ class RotStates:
         beta: np.ndarray = np.linspace(0, np.pi, 30),
         gamma: np.ndarray = np.linspace(0, 2 * np.pi, 30),
         npoints: int = 1000000,
-        tol: float = 1e-8,
+        thresh: float = 1e-8,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Calculates expectation values of angular observables for a wavepacket
         using Metropolis sampling approach.
@@ -358,7 +361,7 @@ class RotStates:
                 Number of points used for Metropolis rejection sampling.
                 Default is 1,000,000
 
-            tol (float, optional):
+            thresh (float, optional):
                 Coefficients with magnitudes below this threshold are ignored.
                 Default is 1e-8.
 
@@ -371,7 +374,9 @@ class RotStates:
                 - costheta2d: cos(theta_2D) expectation values along the second dimension of `coefs`.
                 - cos2theta2d: cos^2(theta_2D) expectation values along the second dimension of `coefs`.
         """
-        dens = self.rot_dens_wp(coefs, alpha, beta, gamma, tol=tol)
+        dens = self.rot_dens_wp(
+            coefs, alpha, beta, gamma, thresh=thresh, method="wp_dens"
+        )
         fdens = RegularGridInterpolator((alpha, beta, gamma), dens)
         max_dens = np.max(dens, axis=(0, 1, 2))
         pts = np.random.uniform(
@@ -432,7 +437,8 @@ class RotStates:
         alpha: np.ndarray = np.linspace(0, 2 * np.pi, 30),
         beta: np.ndarray = np.linspace(0, np.pi, 30),
         gamma: np.ndarray = np.linspace(0, 2 * np.pi, 30),
-        tol=1e-8,
+        thresh: float = 1e-8,
+        method: str = "wp_dens",
     ) -> np.ndarray:
         """Computes the reduced rotational probability density of a wavepacket
         as a function of Euler angles α, β, γ.
@@ -456,7 +462,7 @@ class RotStates:
                 1D array of gamma Euler angles in radians.
                 Default is np.linspace(0, 2 * np.pi, 30).
 
-            tol (float, optional):
+            thresh (float, optional):
                 Coefficients with magnitudes below this threshold are ignored.
                 Default is 1e-8.
 
@@ -467,19 +473,112 @@ class RotStates:
                 The trailing dimensions match `coefs.shape[1:]` or equal to 1
                 if `coefs` has only a single dimension.
         """
+        if method == "wp_dens":
+            return self._rot_dens_wp1(coefs, alpha, beta, gamma, thresh)
+        elif method == "prim_dens":
+            return self._rot_dens_wp2(coefs, alpha, beta, gamma, thresh)
+        else:
+            raise ValueError(f"Unknown value of parameter 'method' = {method}")
+
+    def _rot_dens_wp1(
+        self,
+        coefs: np.ndarray,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        gamma: np.ndarray,
+        thresh: float,
+    ) -> np.ndarray:
+        print("remark: compute reduced rotational density using _rot_dens_wp1")
+
+        if coefs.ndim == 1:
+            coefs_ = np.array([coefs]).T
+        else:
+            coefs_ = coefs
+
+        # convert wavepacket coefficients coefs[...]
+        #   into dictionary coefs[j][sym][...]
+        #   and identify indices for coefs > thresh
+        coefs_dict = self._vec_to_dict(coefs_)
+        coefs_ind = {
+            j: {
+                sym: np.any(np.abs(coefs_dict[j][sym]) > thresh, axis=1).nonzero()[0]
+                for sym in self.sym_list[j]
+            }
+            for j in self.j_list
+        }
+
+        # set of unique vibrational state indices
+        #   across all J and symmetries
+        vib_ind = list(
+            set(
+                [
+                    v
+                    for j in self.j_list
+                    for sym in self.sym_list[j]
+                    for v in self.v_ind[j][sym]
+                ]
+            )
+        )
+
+        psi = np.zeros(
+            (len(vib_ind), len(alpha), len(beta), len(gamma), *coefs_.shape[1:]),
+            dtype=np.complex128,
+        )
+
+        for j in self.j_list:
+            for sym in self.sym_list[j]:
+                ind = coefs_ind[j][sym]
+                dim = len(ind)
+                if dim == 0:
+                    continue
+                c = coefs_dict[j][sym][ind]  # wavepacket coefficients
+
+                rot_kv, rot_m, rot_l, v_ind = self._rot_psi_grid(
+                    j, sym, alpha, beta, gamma
+                )
+                im, ik = self.mk_ind[j][sym][ind].T
+                iv = [vib_ind.index(v) for v in v_ind]
+
+                psi[iv] += np.einsum(
+                    "i...,ivlg,ila,lb->vabg...",
+                    c,
+                    rot_kv[ik],
+                    rot_m[im],
+                    rot_l,
+                    optimize="optimal",
+                )
+
+        return np.einsum(
+            "vabg...,vabg...,b->abg...",
+            np.conj(psi),
+            psi,
+            np.sin(beta),
+            optimize="optimal",
+        )
+
+    def _rot_dens_wp2(
+        self,
+        coefs: np.ndarray,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        gamma: np.ndarray,
+        thresh: float,
+    ) -> np.ndarray:
+        print("remark: compute reduced rotational density using _rot_dens_wp2")
+
         na = len(alpha)
         nb = len(beta)
         ng = len(gamma)
 
         if coefs.ndim == 1:
-            coefs_ = np.array([coefs])
+            coefs_ = np.array([coefs]).T
         else:
             coefs_ = coefs
 
         coefs_dict = self._vec_to_dict(coefs_)
         coefs_ind = {
             j: {
-                sym: np.any(np.abs(coefs_dict[j][sym]) > tol, axis=1).nonzero()[0]
+                sym: np.any(np.abs(coefs_dict[j][sym]) > thresh, axis=1).nonzero()[0]
                 for sym in self.sym_list[j]
             }
             for j in self.j_list
@@ -491,17 +590,17 @@ class RotStates:
             for sym1 in self.sym_list[j1]:
                 ind1 = coefs_ind[j1][sym1]
                 dim1 = len(ind1)
-                c1 = coefs_dict[j1][sym1][ind1]
                 if dim1 == 0:
                     continue
+                c1 = coefs_dict[j1][sym1][ind1]
 
                 for j2 in self.j_list:
                     for sym2 in self.sym_list[j2]:
                         ind2 = coefs_ind[j2][sym2]
                         dim2 = len(ind2)
-                        c2 = coefs_dict[j2][sym2][ind2]
                         if dim2 == 0:
                             continue
+                        c2 = coefs_dict[j2][sym2][ind2]
 
                         d = np.zeros((dim1, dim2, na, nb, ng), dtype=np.complex128)
 
@@ -580,12 +679,12 @@ class RotStates:
         """
         im1, ik1 = self.mk_ind[j1][sym1][istate1]
         rot_kv1, rot_m1, rot_l1, vib_ind1 = self._rot_psi_grid(
-            j1, sym1, ik1, alpha, beta, gamma
+            j1, sym1, alpha, beta, gamma, ik1
         )
 
         im2, ik2 = self.mk_ind[j2][sym2][istate2]
         rot_kv2, rot_m2, rot_l2, vib_ind2 = self._rot_psi_grid(
-            j2, sym2, ik2, alpha, beta, gamma
+            j2, sym2, alpha, beta, gamma, ik2
         )
 
         vib_ind12 = list(set(vib_ind1) & set(vib_ind2))
@@ -615,18 +714,21 @@ class RotStates:
         self,
         j: int,
         sym: str,
-        istate: int,
         alpha: np.ndarray,
         beta: np.ndarray,
         gamma: np.ndarray,
+        istate: int | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
+
         rot_k, rot_m, rot_l, k_list, jktau_list = symtop_on_grid_split_angles(
             j, alpha, beta, gamma
         )
 
         rot_ind = self.r_ind[j][sym]
         vib_ind = self.v_ind[j][sym]
-        coefs = self.vec[j][sym][:, istate]
+        coefs = self.vec[j][sym]
+        if istate is not None:
+            coefs = coefs[:, istate]
 
         rot_k = rot_k[rot_ind]
         vib_ind_unique = list(set(vib_ind))
@@ -635,7 +737,7 @@ class RotStates:
         for i, v in enumerate(v_ind):
             unique_vec[v, i] = 1
         rot_kv = np.einsum(
-            "k,klg,kv->vlg", coefs, rot_k, unique_vec, optimize="optimal"
+            "k...,klg,kv->...vlg", coefs, rot_k, unique_vec, optimize="optimal"
         )
         return rot_kv, rot_m, rot_l, vib_ind_unique
 
