@@ -18,9 +18,13 @@ The following capabilities are straightforward to add, depending on research nee
 - Spin-rotation and spin-spin hyperfine interactions.
 
 ## Installation
+Clone the repository and run
+```bash
+bash build_and_install.sh
 ```
-pip install --upgrade git+https://github.com/robochimps/richmol.git
-```
+<!-- ``` -->
+<!-- pip install --upgrade git+https://github.com/robochimps/richmol.git -->
+<!-- ``` -->
 
 ## Examples
 
