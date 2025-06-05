@@ -258,6 +258,42 @@ class MKTensor:
         mat = self._dict_to_mat(me_j)
         return mat
 
+    def mat_trace(self, field: np.ndarray) -> float:
+        """Computes trace of Cartesian tensor operator contracted
+        with a given external field.
+
+        Args:
+            field (np.ndarray):
+                A 1D array of shape (3,) representing the Cartesian components
+                of the external field.
+
+        Returns:
+            float:
+                The trace of Cartesian tensor operator contracted with the field.
+        """
+        # multiply M-tensor with field (only diagonal elements)
+        mf = self._mf_tens(field, diag=True)
+
+        # trace (M \otimes K) = trace(M) * trace(K)
+
+        tr = 0
+        for j1, j2 in list(set(mf.keys()) & set(self.kmat.keys())):
+            if j1 != j2:
+                continue
+
+            mfmat = mf[(j1, j2)]
+            kmat_j = self.kmat[(j1, j2)]
+            m_tr = {omega: mfmat[omega].sum() for omega in mfmat.keys()}
+
+            for (sym1, sym2), kmat in kmat_j.items():
+                if sym1 != sym2:
+                    continue
+
+                for omega in list(set(m_tr.keys()) & set(kmat.keys())):
+                    tr += kmat[omega].diagonal().sum() * m_tr[omega]
+
+        return tr
+
     def mat_vec(self, field: np.ndarray, vec: np.ndarray) -> np.ndarray:
         """Computes the action of a Cartesian tensor operator on a vector,
         contracted with a given external field.
@@ -312,7 +348,7 @@ class MKTensor:
         vec2 = self._dict_to_vec(vec2)
         return vec2
 
-    def _mf_tens(self, field: np.ndarray):
+    def _mf_tens(self, field: np.ndarray, diag: bool = False):
         """Multiplies the M-tensor matrix elements with the input field
         and sums over all Cartesian components.
         """
@@ -329,13 +365,19 @@ class MKTensor:
 
         mf = {}
         for (j1, j2), m_j in self.mmat.items():
+            if diag and j1 != j2:
+                continue
             mf_o = {}
             for cart, m_cart in m_j.items():
                 for omega, m in m_cart.items():
+                    if diag:
+                        m_mat = m.diagonal()
+                    else:
+                        m_mat = m
                     try:
-                        mf_o[omega] += m * field_tens[cart]
+                        mf_o[omega] += m_mat * field_tens[cart]
                     except KeyError:
-                        mf_o[omega] = m * field_tens[cart]
+                        mf_o[omega] = m_mat * field_tens[cart]
 
             if mf_o:
                 mf[(j1, j2)] = mf_o
