@@ -24,7 +24,7 @@ def propagate_expokit(
     split_method: bool = True,
     field_tol: float = 1e-12,
     no_krylov: int = 12,
-    vec_tol: float=0
+    vec_tol: float = 0,
 ):
     time_units = {"ps": 1e-12, "fs": 1e-15, "ns": 1e-9}
     assert time_unit.lower() in time_units, (
@@ -61,12 +61,18 @@ def propagate_expokit(
             return np.array([c2]).T
 
     nt = int((t1 - t0) / dt)
-    time = np.linspace(t0, t1, nt)
+    time = np.linspace(t0, t1, num=nt, endpoint=False)
+    time_dt = time + dt
+    time_dt_c = time + dt / 2
+
     c = c0.copy()
     c_t = []
-    for t in time:
+
+    for it, t in enumerate(time_dt_c):
         field = field_func(t)
         matvec_t = lambda c: matvec(c, field)
+        if it % 100 == 0:
+            print(t, field)
 
         if split_method:
             c = c * h0_exp
@@ -95,7 +101,7 @@ def propagate_expokit(
         c_t.append(c)
     c_t = np.array(c_t)
 
-    return time, c_t
+    return time_dt, c_t
 
 
 def propagate_expm(
@@ -131,7 +137,7 @@ def propagate_expm(
     h0_exp = np.exp(0.5 * fac[0] * h0.diagonal())
     h0_tr = h0.diagonal().sum()
 
-    def rhs(c, field):
+    def matvec(c, field):
         if c.ndim == 1:
             c_ = c
         else:
@@ -155,13 +161,19 @@ def propagate_expm(
         return tr
 
     nt = int((t1 - t0) / dt)
-    time = np.linspace(t0, t1, nt)
+    time = np.linspace(t0, t1, num=nt, endpoint=False)
+    time_dt = time + dt
+    time_dt_c = time + dt / 2
+
     c = c0.copy()
     c_t = []
-    for t in time:
+
+    for it, t in enumerate(time_dt_c):
         field = field_func(t)
-        rhs_t = lambda c: rhs(c, field)
-        H = LinearOperator(shape=h0.shape, dtype=complex, matvec=rhs_t, rmatvec=rhs_t)
+        matvec_t = lambda c: matvec(c, field)
+        H = LinearOperator(
+            shape=h0.shape, dtype=complex, matvec=matvec_t, rmatvec=matvec_t
+        )
         if split_method:
             c = c * h0_exp
             if np.linalg.norm(field) > field_tol:
@@ -174,7 +186,7 @@ def propagate_expm(
         c_t.append(c)
     c_t = np.array(c_t)
 
-    return time, c_t
+    return time_dt, c_t
 
 
 def propagate_rk(
