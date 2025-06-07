@@ -25,6 +25,7 @@ def propagate_expokit(
     field_tol: float = 1e-12,
     no_krylov: int = 12,
     vec_tol: float = 0,
+    timestep_func: Callable[[int, float, np.ndarray], None] = lambda *_: None,
 ):
     time_units = {"ps": 1e-12, "fs": 1e-15, "ns": 1e-9}
     assert time_unit.lower() in time_units, (
@@ -71,8 +72,6 @@ def propagate_expokit(
     for it, t in enumerate(time_dt_c):
         field = field_func(t)
         matvec_t = lambda c: matvec(c, field)
-        if it % 100 == 0:
-            print(t, field)
 
         if split_method:
             c = c * h0_exp
@@ -99,8 +98,9 @@ def propagate_expokit(
             c = zhexpv(c, no_krylov, norm, matvec_t, tol=vec_tol)
 
         c_t.append(c)
-    c_t = np.array(c_t)
+        timestep_func(it, time_dt[it], c)
 
+    c_t = np.array(c_t)
     return time_dt, c_t
 
 
@@ -116,6 +116,7 @@ def propagate_expm(
     c0: np.ndarray,
     split_method: bool = True,
     field_tol: float = 1e-12,
+    timestep_func: Callable[[int, float, np.ndarray], None] = lambda *_: None,
 ):
     time_units = {"ps": 1e-12, "fs": 1e-15, "ns": 1e-9}
     assert time_unit.lower() in time_units, (
@@ -183,9 +184,11 @@ def propagate_expm(
         else:
             tr = trace(field)
             c = expm_multiply(H, c, traceA=tr)
-        c_t.append(c)
-    c_t = np.array(c_t)
 
+        c_t.append(c)
+        timestep_func(it, time_dt[it], c)
+
+    c_t = np.array(c_t)
     return time_dt, c_t
 
 
