@@ -9,18 +9,23 @@ from scipy.sparse import block_array, csr_array, kron
 from .asymtop import RotStates
 from .symtop import wang_coefs
 
-# Collection of spherical spherical tensors for different ranks
-#   _TENSORS[rank] = dataclass
-_TENSORS: dict[int, type] = {}
+# Collection of spherical spherical tensors for different ranks and names
+#   _TENSORS[(rank, name)] = dataclass
+_TENSORS: dict[tuple[int, str], type] = {}
+
+# Default tensor name for given rank
+_DEFAULT_NAME = {1: "cartesian", 2: "cartesian(full)"}
 
 
 def register(cls):
     rank = cls.rank
-    if rank in _TENSORS:
+    name = cls.name
+    if (rank, name) in _TENSORS:
         raise ValueError(
-            f"Class {_TENSORS[rank].__name__} and {cls.__name__} have the same rank: {cls.rank}"
+            f"Class {_TENSORS[(rank, name)].__name__} and {cls.__name__} have the same rank: {cls.rank} "
+            + f"and the same name: {cls.name}"
         )
-    _TENSORS[rank] = cls
+    _TENSORS[(rank, name)] = cls
     return cls
 
 
@@ -28,6 +33,7 @@ def register(cls):
 @register
 class Rank1Tensor:
     rank: int = 1
+    name: str = _DEFAULT_NAME[1]
     cart_ind: list[str] = field(default_factory=lambda: ["x", "y", "z"])
     spher_ind: list[tuple[int, int]] = field(
         default_factory=lambda: [(1, -1), (1, 0), (1, 1)]
@@ -70,6 +76,7 @@ class Rank1Tensor:
 @register
 class Rank2Tensor:
     rank: int = 2
+    name: str = _DEFAULT_NAME[2]
     cart_ind: list[str] = field(
         default_factory=lambda: ["xx", "xy", "xz", "yx", "yy", "yz", "zx", "zy", "zz"]
     )
@@ -143,6 +150,40 @@ class Rank2Tensor:
             self.umat_spher_to_cart[om] = umat_spher_to_cart[:, sigma_ind]
 
 
+@dataclass
+@register
+class CosBetaTensor:
+    """Cartesian tensor representation of cos(beta) (beta is Euler angle)"""
+
+    rank: int = 1
+    name: str = "cos(beta)"
+    cart_ind: list[str] = field(default_factory=lambda: ["_"])
+    spher_ind: list[tuple[int, int]] = field(default_factory=lambda: [(1, 0)])
+    umat_cart_to_spher: dict[int, np.ndarray] = field(
+        default_factory=lambda: {1: np.array([[1]], dtype=np.complex128)}
+    )
+    umat_spher_to_cart: dict[int, np.ndarray] = field(
+        default_factory=lambda: {1: np.array([[1]], dtype=np.complex128)}
+    )
+
+
+@dataclass
+@register
+class Cos2BetaTensor:
+    """Cartesian tensor representation of cos^2(beta) (beta is Euler angle)"""
+
+    rank: int = 1
+    name: str = "cos^2(beta)"
+    cart_ind: list[str] = field(default_factory=lambda: ["_"])
+    spher_ind: list[tuple[int, int]] = field(default_factory=lambda: [(2, 0)])
+    umat_cart_to_spher: dict[int, np.ndarray] = field(
+        default_factory=lambda: {2: np.array([[1]], dtype=np.complex128)}
+    )
+    umat_spher_to_cart: dict[int, np.ndarray] = field(
+        default_factory=lambda: {2: np.array([[2 / 3]], dtype=np.complex128)}
+    )
+
+
 class MKTensor:
     """Generic Cartesian tensor class"""
 
@@ -167,7 +208,7 @@ class MKTensor:
     #   where m' = -j1 .. j1, m = -j2 .. j2
     mmat: dict[tuple[int | float, int | float], dict[str, dict[int, csr_array]]]
 
-    def mat(self, cart: str) -> csr_array:
+    def mat(self, cart: str = "_") -> csr_array:
         """Assembles full matrix corresponding to a specific Cartesian component
         of the tensor operator.
 
@@ -358,10 +399,16 @@ class MKTensor:
             f"but got shape = {field_arr.shape}"
         )
 
-        field_tens = {
-            elem: np.prod(field_arr[["xyz".index(x) for x in elem]])
-            for elem in self.cart_ind
-        }
+        try:
+            field_tens = {
+                elem: np.prod(field_arr[["xyz".index(x) for x in elem]])
+                for elem in self.cart_ind
+            }
+        except ValueError:
+            raise ValueError(
+                "Tensor has no Cartesian components and cannot be multiplied with field\n"
+                + f"its components are: {self.cart_ind}"
+            )
 
         mf = {}
         for (j1, j2), m_j in self.mmat.items():
@@ -504,24 +551,55 @@ class CartTensor(MKTensor):
     def __init__(
         self,
         states: RotStates,
-        mol_tens: np.ndarray,
+        tens: np.ndarray | list | tuple | str,
         vib: bool = False,
         thresh: float = 1e-12,
     ):
+        mol_tens = None
+        tens_name = ""
+        if isinstance(tens, str):
+            tens_name = tens
+        elif isinstance(tens, (np.ndarray, list, tuple)):
+            mol_tens = tens
+        else:
+            raise TypeError(
+                f"Invalid type for 'tens': expected a string (tensor name) or a list/tuple/numpy array "
+                f"(molecular-frame tensor values), but got {type(tens).__name__}."
+            )
+
+        # special case for matrix elements of functions like cos(beta) or cos^2(beta)
+        #   for which `mol_tens` = None
+
+        if mol_tens is None:
+            if vib:
+                nvib = np.max(
+                    [
+                        np.max(v_sym) + 1
+                        for v_j in states.v_ind.values()
+                        for v_sym in v_j.values()
+                    ]
+                )
+                mol_tens = np.zeros((nvib, nvib, 3))
+                mol_tens[:, :, 0] = np.eye(nvib)
+            else:
+                mol_tens = np.array([1, 0, 0])
+
         if not isinstance(mol_tens, np.ndarray):
             mol_tens = np.array(mol_tens)
 
-        if vib:  # first two dimensions are vibrational quanta
+        # check `mol_tens` dimensions and infer tensor rank
+
+        if vib:  # first two dimensions of `mol_tens` are vibrational quanta
             if mol_tens.ndim < 3:
                 raise ValueError(
                     f"Since 'vib' = {vib}, tensor 'mol_tens' must have at least 3 dimensions "
-                    + f"(vib basis, vib basis, 3 ...), got shape = {mol_tens.shape}"
+                    + f"(vib basis, vib basis, 3 ...), but got shape = {mol_tens.shape}"
                 )
 
             if not all(dim == 3 for dim in mol_tens.shape[2:]):
                 raise ValueError(
                     f"Since 'vib' = {vib}, all dimensions of 'mol_tens' starting from the third "
-                    + f"must be size 3, got shape = {mol_tens.shape}"
+                    + f"must be size 3, but got shape = {mol_tens.shape}"
                 )
 
             rank = mol_tens.ndim - 2
@@ -530,18 +608,33 @@ class CartTensor(MKTensor):
             if not all(dim == 3 for dim in mol_tens.shape):
                 raise ValueError(
                     f"Since 'vib' = {vib}, all dimensions of 'mol_tens' must be size 3, "
-                    + f"got shape = {mol_tens.shape}"
+                    + f"but got shape = {mol_tens.shape}"
                 )
 
             rank = mol_tens.ndim
             mol_tens = np.array(mol_tens)[np.newaxis, np.newaxis, ...]
 
-        if rank in _TENSORS:
-            tens = _TENSORS[rank]()
+        # infer tensor name, if not provided, from its rank
+
+        if tens_name.strip() == "":
+            if rank in _DEFAULT_NAME:
+                tens_name = _DEFAULT_NAME[rank]
+            else:
+                raise ValueError(
+                    f"Cannot infer tensor name from its rank = {rank}, "
+                    + "not implemented in _DEFAULT_NAME"
+                )
+
+        # select tensor by its name and rank and copy to self
+
+        if (rank, tens_name) in _TENSORS:
+            tens = _TENSORS[(rank, tens_name)]()
             for f in fields(tens):
                 setattr(self, f.name, getattr(tens, f.name))
         else:
-            raise ValueError(f"Cartesian tensor for rank = {rank} is not implemented")
+            raise ValueError(
+                f"Cartesian tensor with rank = {rank} and name = {tens_name} is not implemented"
+            )
 
         self.kmat = self._k_tens(states, mol_tens, thresh)
         self.mmat = self._m_tens(states, thresh)
@@ -611,7 +704,12 @@ class CartTensor(MKTensor):
         """
         # flatten molecular-frame tensor matrix elements such that the order
         # of Cartesian indices matches that in `self.cart_ind`
-        cart_ind = [["xyz".index(x) for x in elem] for elem in self.cart_ind]
+        try:
+            cart_ind = [["xyz".index(x) for x in elem] for elem in self.cart_ind]
+        except ValueError:
+            # for cos(beta) or cos^2(beta)
+            cart_ind = [["_".index(x) for x in elem] for elem in self.cart_ind]
+
         if self.rank == 1:
             mol_tens = np.moveaxis(
                 np.array([mol_tens[..., i] for (i,) in cart_ind]), 0, -1
