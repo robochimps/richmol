@@ -61,6 +61,6 @@ def wigner_D(
     d = wigner_d(j, beta)
     m = np.linspace(-j, j, int(2 * j + 1))
     k = np.linspace(-j, j, int(2 * j + 1))
-    em = np.exp(1j * alpha[None, None, :] * m[:, None, None])
-    ek = np.exp(1j * gamma[None, None, :] * k[None, :, None])
+    em = np.exp(-1j * alpha[None, None, :] * m[:, None, None])
+    ek = np.exp(-1j * gamma[None, None, :] * k[None, :, None])
     return em * ek * d

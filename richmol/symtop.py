@@ -368,8 +368,8 @@ def symtop_on_grid_split_angles(
     ind = np.array(ind)
 
     v = _jy_eig(j)
-    em = np.exp(-1j * alpha[None, :] * ind[:, None])
-    ek = np.exp(-1j * gamma[None, :] * ind[:, None])
+    em = np.exp(1j * alpha[None, :] * ind[:, None])
+    ek = np.exp(1j * gamma[None, :] * ind[:, None])
 
     rot_k = np.einsum(
         "kt,kl,kg->tlg", coefs, v[wang_map], ek[wang_map], optimize="optimal"
