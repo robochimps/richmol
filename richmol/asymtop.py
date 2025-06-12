@@ -431,6 +431,29 @@ class RotStates:
 
         return costheta, cos2theta, costheta2d, cos2theta2d
 
+    def mc_rot_dens_wp(
+        self,
+        coefs: np.ndarray,
+        alpha: np.ndarray = np.linspace(0, 2 * np.pi, 30),
+        beta: np.ndarray = np.linspace(0, np.pi, 30),
+        gamma: np.ndarray = np.linspace(0, 2 * np.pi, 30),
+        npoints: int = 1000000,
+        thresh: float = 1e-8,
+    ) -> list[np.ndarray]:
+        dens = self.rot_dens_wp(
+            coefs, alpha, beta, gamma, thresh=thresh, method="wp_dens"
+        )
+        fdens = RegularGridInterpolator((alpha, beta, gamma), dens)
+        max_dens = np.max(dens, axis=(0, 1, 2))
+        pts = np.random.uniform(
+            low=[0, 0, 0], high=[2 * np.pi, np.pi, 2 * np.pi], size=(npoints, 3)
+        )
+        w = fdens(pts) / max_dens
+        eta = np.random.uniform(0.0, 1.0, size=len(w))
+        points = [pts[np.where(w_ > eta)] for w_ in w.T]
+        rot_mat = [Rotation.from_euler("ZYZ", pts).as_matrix() for pts in points]
+        return rot_mat
+
     def rot_dens_wp(
         self,
         coefs: np.ndarray,
