@@ -51,6 +51,15 @@ class Cs(Symmetry):
 
 
 @register
+class C2(Symmetry):
+    irreps = ["A", "B"]
+
+    @staticmethod
+    def irrep_from_k_tau(k: int, tau: Literal[0, 1]) -> str:
+        return {0: "A", 1: "B"}[tau]
+
+
+@register
 class D2(Symmetry):
     # ! TODO
     @staticmethod
