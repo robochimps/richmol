@@ -96,7 +96,7 @@ class HyperStates:
     #   where n runs across dim_m[f] -> dim_k[f][sym]
     quanta_dict: dict[float, dict[str, list[tuple[float]]]]
 
-    # quanta_dict[j][sym][n] = (f, j, *spin, rovib_sym, spin_sym, *rot_qua, c),
+    # quanta_dict_k[j][sym][n] = (f, j, *spin, rovib_sym, spin_sym, *rot_qua, c),
     #   where n runs across dim_k[f][sym]
     quanta_dict_k: dict[float, dict[str, list[tuple[float]]]]
 
@@ -111,7 +111,7 @@ class HyperStates:
         states: RotStates,
         spin_op: list[SpinOperator],
         efg_op: list[CartTensor | None] = [],
-        symmetry_rules = _symmetry_spin_rotation_placeholder,
+        symmetry_rules=_symmetry_spin_rotation_placeholder,
     ):
         print("\nCompute hyperfine states")
 
@@ -159,9 +159,7 @@ class HyperStates:
         for f in self.f_list:
             spin_list, j_list = near_equal_coupling_with_rotations(f, spin_op)
             j_sym_list = states.sym_list
-            j_spin_list = symmetry_rules(
-                j_list, j_sym_list, spin_list
-            )
+            j_spin_list = symmetry_rules(j_list, j_sym_list, spin_list)
             self.f_sym_list[f] = list(j_spin_list.keys())
 
             # add dimension of the rovibrational basis to the list
@@ -266,9 +264,13 @@ class HyperStates:
 
         self.quanta_dict = {}
         self.quanta_dict_k = {}
+        self.quanta_dict_op = {}
+
         for f in self.f_list:
             quanta_sym = {}
             quanta_sym_k = {}
+            quanta_sym_op = {}
+
             for sym in self.f_sym_list[f]:
                 e = self.enr[f][sym]
                 v = self.vec[f][sym]
@@ -294,10 +296,34 @@ class HyperStates:
                     (q[0], m, *q[1:]) for m in np.arange(-f, f + 1) for q in qua_k
                 ]
 
+                # sum of squares of coefficients for different total nuclear spins
+
+                spin_qua = [
+                    spin[-1]
+                    for (j, spin, j_sym, *_) in self.j_spin_list[f][sym]
+                    for _ in states.quanta_dict_k[j][j_sym]
+                ]
+                unique_spin_ind = {
+                    spin: [i for i, val in enumerate(spin_qua) if val == spin]
+                    for spin in list(set(spin_qua))
+                }
+                qua_op = []
+                for i in range(len(e)):
+                    sum_v2 = [
+                        (spin, float(sum(abs(v[ind, i]) ** 2)))
+                        for spin, ind in unique_spin_ind.items()
+                    ]
+                    qua_op.append(
+                        sorted(sum_v2, key=lambda elem: elem[-1], reverse=True)
+                    )
+
                 quanta_sym[sym] = qua_mk
                 quanta_sym_k[sym] = qua_k
+                quanta_sym_op[sym] = qua_op
+
             self.quanta_dict[f] = quanta_sym
             self.quanta_dict_k[f] = quanta_sym_k
+            self.quanta_dict_op[f] = quanta_sym_op
         self.quanta = self._dict_to_vec(self.quanta_dict)
 
     def mat(self):
