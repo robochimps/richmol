@@ -114,7 +114,8 @@ class RotStates:
         cls,
         max_j: int,
         inp,
-        print_states: bool = False,
+        print_enr: bool = False,
+        rot_const: dict[str, float] = {},
     ):
         """Computes rigid rotor states from a given molecular geometry.
 
@@ -127,7 +128,7 @@ class RotStates:
                 A specification of the molecular geometry, including atomic positions, units,
                 optional mass assignments, and symmetry label. Examples are shown below.
 
-            print_states (bool, optional):
+            print_enr (bool, optional):
                 If True, prints a table of computed rotational energy levels and
                 their corresponding quantum state assignments.
                 Default is False.
@@ -225,9 +226,27 @@ class RotStates:
 
         G = (u @ np.diag(d) @ v) * G_TO_INVCM
 
-        print("G-matrix (cm^-1):\n", G)
+        print("G-matrix from input Cartesian coordinates (cm^-1):\n", G)
 
-        # matrix elements of JxJy
+        # Add rotational and effective-Hamiltonian constants
+
+        if rot_const:
+            if np.max(np.abs(G - np.diag(np.diag(G)))) > 1e-14:
+                raise ValueError(
+                    "The 'eff_params' argument was provided (i.e., rotational constants are specified), "
+                    f"but the kinetic energy G-matrix is not diagonal (max off-diag = {np.max(np.abs(G))}).\n"
+                    "This indicates that the input coordinates are not aligned with the PAS frame."
+                )
+            if "Bx" in rot_const:
+                G[0, 0] = rot_const["Bx"]
+            if "By" in rot_const:
+                G[1, 1] = rot_const["By"]
+            if "Bz" in rot_const:
+                G[2, 2] = rot_const["Bz"]
+
+            print("G-matrix from input rotational constants (cm^-1):\n", G)
+
+        # solve for J = 0 .. max_j
 
         nested_dict = lambda: defaultdict(nested_dict)
         enr = nested_dict()
@@ -263,7 +282,7 @@ class RotStates:
 
         # print solutions
 
-        if print_states:
+        if print_enr:
             print(
                 f"{'J':>3} {'Irrep':>5} {'i':>4} {'Energy (E)':>18} {'(J,k,tau,Irrep)':>20} {'c_max²':>16}"
             )
