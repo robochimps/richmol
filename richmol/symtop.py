@@ -229,6 +229,50 @@ def _jz_jz(j, k, c=1):
     return _jz(*_jz(j, k, c))
 
 
+def _j4(j, k, c=1):
+    return _jj(*_jj(j, k, c))
+
+
+def _j6(j, k, c=1):
+    return _jj(*_j4(j, k, c))
+
+
+def _jz4(j, k, c=1):
+    return _jz_jz(*_jz_jz(j, k, c))
+
+
+def _jz6(j, k, c=1):
+    return _jz_jz(*_jz4(j, k, c))
+
+
+def _j2_jz2(j, k, c=1):
+    return _jj(*_jz_jz(j, k, c))
+
+
+def _j4_jz2(j, k, c=1):
+    return _jj(*_j2_jz2(j, k, c))
+
+
+def _j2_jz4(j, k, c=1):
+    return _jj(*_jz4(j, k, c))
+
+
+def _jplus4(j, k, c=1):
+    return _jplus_jplus(*_jplus_jplus(j, k, c))
+
+
+def _jplus6(j, k, c=1):
+    return _jplus_jplus(*_jplus4(j, k, c))
+
+
+def _jminus4(j, k, c=1):
+    return _jminus_jminus(*_jminus_jminus(j, k, c))
+
+
+def _jminus6(j, k, c=1):
+    return _jminus_jminus(*_jminus4(j, k, c))
+
+
 def _delta(x, y):
     return 1 if x == y else 0
 
@@ -341,6 +385,93 @@ def rotme_cor(j: int, linear: bool = False, sym: Symmetry = SymmetryType.d2):
     assert (
         max_imag < 1e-12
     ), f"i*<J',k',tau'|Ja|J,k,tau> matrix elements are not real-valued, max imaginary component: {max_imag}"
+    return jnp.real(res), k_list, jktau_list
+
+
+def rotme_watson_a(
+    j: int,
+    rot_const: dict[str, float],
+    linear: bool = False,
+    sym: Symmetry = SymmetryType.d2,
+):
+    k_list, jktau_list, coefs = wang_coefs(j, linear, sym)
+    j2 = jnp.array(
+        [[_overlap((j, k1, 1), _jj(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    j4 = jnp.array(
+        [[_overlap((j, k1, 1), _j4(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    j6 = jnp.array(
+        [[_overlap((j, k1, 1), _j6(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    jz2 = jnp.array(
+        [[_overlap((j, k1, 1), _jz_jz(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    jz4 = jnp.array(
+        [[_overlap((j, k1, 1), _jz4(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    jz6 = jnp.array(
+        [[_overlap((j, k1, 1), _jz6(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    j2jz2 = jnp.array(
+        [[_overlap((j, k1, 1), _j2_jz2(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    j4jz2 = jnp.array(
+        [[_overlap((j, k1, 1), _j4_jz2(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    j2jz4 = jnp.array(
+        [[_overlap((j, k1, 1), _j2_jz4(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    jp2 = jnp.array(
+        [[_overlap((j, k1, 1), _jplus_jplus(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    jm2 = jnp.array(
+        [
+            [_overlap((j, k1, 1), _jminus_jminus(j, k2)) for k2 in k_list]
+            for k1 in k_list
+        ]
+    )
+
+    expr = {}
+    expr["DeltaJ"] = -j4
+    expr["DeltaJK"] = -j2jz2
+    expr["DeltaK"] = -jz4
+    expr["deltaJ"] = -0.5 * (j2 * (jp2 + jm2) + jp2 * j2 + jm2 * j2)
+    expr["deltaK"] = -0.5 * (jz2 * (jp2 + jm2) + jp2 * jz2 + jm2 * jz2)
+    expr["HJ"] = j6
+    expr["HJK"] = j4jz2
+    expr["HKJ"] = j2jz4
+    expr["HK"] = jz6
+    expr["phiJ"] = 0.5 * (j4 * (jp2 + jm2) + jp2 * j4 + jm2 * j4)
+    expr["phiJK"] = 0.5 * (j2jz2 * (jp2 + jm2) + jp2 * j2jz2 + jm2 * j2jz2)
+    expr["phiK"] = 0.5 * (jz4 * (jp2 + jm2) + jp2 * jz4 + jm2 * jz4)
+
+    # check input keys for rotational constants
+    expr_keys = list(expr.keys())
+    inp_keys = list(rot_const.keys())
+    unknown_keys = set(inp_keys) - set(expr_keys)
+    if unknown_keys:
+        raise ValueError(
+            f"Uknown keys in rotational constants input 'rot_const': {unknown_keys}.\n"
+            f"Valid keys: {expr_keys}"
+        )
+
+    # build effective Hamiltonian (without rigid-rotor part)
+    ham = 0
+    for key, val in expr.items():
+        try:
+            const = rot_const[key]
+            print(f"add Watson-A term '{key}' = {const}")
+            ham = ham + const * val
+        except AttributeError:
+            pass
+    res = jnp.einsum("ki,kl,lj->ij", jnp.conj(coefs), ham, coefs)
+
+    max_imag = jnp.max(jnp.abs(jnp.imag(res)))
+    assert (
+        max_imag < 1e-12
+    ), f"<J',k',tau'|Watson-A|J,k,tau> matrix elements are not real-valued, max imaginary component: {max_imag}"
+
     return jnp.real(res), k_list, jktau_list
 
 
