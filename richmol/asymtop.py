@@ -12,7 +12,7 @@ from scipy.sparse import csr_array, diags
 from scipy.spatial.transform import Rotation
 
 from .symmetry import SymmetryType
-from .symtop import rotme_rot, symtop_on_grid_split_angles
+from .symtop import rotme_rot, symtop_on_grid_split_angles, rotme_watson_s
 from .units import UnitType
 
 jax.config.update("jax_enable_x64", True)
@@ -110,12 +110,84 @@ class RotStates:
         self.quanta = self._dict_to_vec(self.quanta_dict)
 
     @classmethod
+    def watson_s(cls, max_j: int, inp, print_enr: bool = False):
+        print("\nCompute rotational solutions using Watson-S effective Hamiltonian")
+        avail_const = [
+            "A",
+            "B",
+            "C",
+            "DeltaJ",
+            "DeltaJK",
+            "DeltaK",
+            "d1",
+            "d2",
+            "HJ",
+            "HJK",
+            "HKJ",
+            "HK",
+            "h1",
+            "h2",
+            "h3",
+        ]
+        avail_units = ["MHz", "kHz", "Hz"]
+        const, sym_label = _parse_rotconst_input(inp, avail_const, avail_units)
+
+        mhz_units = {"mhz": 1, "khz": 1e-3, "hz": 1e-6}  # working units are MHz
+        rot_const = {
+            name: val * mhz_units[units.lower()] for (name, units), val in const.items()
+        }
+
+        print("Input rotational constants (MHz):")
+        for name, val in rot_const.items():
+            print(f" {name:>10} " f"{val:18.12f} ")
+
+        # read A, B, C constants
+        if {"A", "B", "C"}.issubset(rot_const.keys()):
+            rot_a = rot_const["A"]
+            rot_b = rot_const["B"]
+            rot_c = rot_const["C"]
+            linear = False
+            if not (rot_a >= rot_b >= rot_c):
+                raise ValueError(
+                    f"Expected A >= B >= C, but got: A={rot_a}, B={rot_b}, C={rot_c} (in MHz)"
+                )
+        elif {"B"}.issubset(rot_const.keys()):
+            rot_a = None
+            rot_b = rot_const["B"]
+            rot_c = None
+            linear = True
+            print("Molecule is linear")
+        else:
+            raise ValueError(
+                f"Input for A, B, and C rotational constants is not provided"
+            )
+
+        try:
+            i = [elem.name for elem in SymmetryType].index(sym_label)
+            sym = [elem for elem in SymmetryType][i]
+        except ValueError:
+            raise ValueError(f"No symmetry '{sym_label}' found") from None
+
+        print("Symmetry group:", sym.name)
+
+        ham_func = lambda j: rotme_watson_s(j, rot_a, rot_b, rot_c, rot_const, sym)
+
+        return cls._solve(
+            max_j,
+            sym,
+            ham_func,
+            masses=np.full(1, None),
+            xyz=np.full(1, None),
+            linear=linear,
+            print_enr=print_enr,
+        )
+
+    @classmethod
     def from_geometry(
         cls,
         max_j: int,
         inp,
         print_enr: bool = False,
-        rot_const: dict[str, float] = {},
     ):
         """Computes rigid rotor states from a given molecular geometry.
 
@@ -165,7 +237,7 @@ class RotStates:
         """
         print("\nCompute rigid-rotor solutions using molecular geometry as input")
 
-        atom_labels, atom_xyz, atom_masses, units, sym_label = _parse_input(inp)
+        atom_labels, atom_xyz, atom_masses, units, sym_label = _parse_geom_input(inp)
 
         atom_masses = [
             mass if mass != None else atom_mass(labes)
@@ -228,23 +300,23 @@ class RotStates:
 
         print("G-matrix from input Cartesian coordinates (cm^-1):\n", G)
 
-        # Add rotational and effective-Hamiltonian constants
+        def ham_func(j):
+            me, k_list, jktau_list = rotme_rot(j=j, linear=linear, sym=sym)
+            ham = 0.5 * np.einsum("ab,abij->ij", G, me, optimize="optimal")
+            return ham, k_list, jktau_list
 
-        if rot_const:
-            if np.max(np.abs(G - np.diag(np.diag(G)))) > 1e-14:
-                raise ValueError(
-                    "The 'eff_params' argument was provided (i.e., rotational constants are specified), "
-                    f"but the kinetic energy G-matrix is not diagonal (max off-diag = {np.max(np.abs(G))}).\n"
-                    "This indicates that the input coordinates are not aligned with the PAS frame."
-                )
-            if "Bx" in rot_const:
-                G[0, 0] = rot_const["Bx"]
-            if "By" in rot_const:
-                G[1, 1] = rot_const["By"]
-            if "Bz" in rot_const:
-                G[2, 2] = rot_const["Bz"]
+        return cls._solve(
+            max_j,
+            sym,
+            ham_func,
+            masses=masses,
+            xyz=xyz,
+            linear=linear,
+            print_enr=print_enr,
+        )
 
-            print("G-matrix from input rotational constants (cm^-1):\n", G)
+    @classmethod
+    def _solve(cls, max_j, sym, ham_func, masses, xyz, linear, print_enr):
 
         # solve for J = 0 .. max_j
 
@@ -261,10 +333,7 @@ class RotStates:
         sym_list = {j: [] for j in j_list}
 
         for j in j_list:
-            me, k_list[j], jktau_list[j] = rotme_rot(j=j, linear=linear, sym=sym)
-
-            # matrix elements of KEO
-            ham = 0.5 * np.einsum("ab,abij->ij", G, me, optimize="optimal")
+            ham, k_list[j], jktau_list[j] = ham_func(j=j)
 
             for irrep in sym.irreps:
                 print(f"solve for J = {j} and symmetry {irrep} ...")
@@ -284,7 +353,7 @@ class RotStates:
 
         if print_enr:
             print(
-                f"{'J':>3} {'Irrep':>5} {'i':>4} {'Energy (E)':>18} {'(J,k,tau,Irrep)':>20} {'c_max²':>16}"
+                f"{'J':>3} {'Irrep':>5} {'i':>4} {'Energy':>18} {'(J,k,tau,Irrep)':>20} {'c_max²':>16}"
             )
             for j in j_list:
                 for irrep in sym_list[j]:
@@ -882,7 +951,7 @@ def atom_mass(atom_label: str) -> float:
         return main_iso.mass
 
 
-def _parse_input(inp):
+def _parse_geom_input(inp):
     unit = "angstrom"
     symmetry = "c1"
     atom_labels = []
@@ -945,3 +1014,57 @@ def _parse_input(inp):
             raise ValueError(f"Unexpected item at position {ielem}: {item}")
 
     return atom_labels, atom_coords, atom_masses, unit, symmetry
+
+
+def _parse_rotconst_input(inp, avail_const, avail_units):
+    symmetry = "c1"
+    const = {}
+
+    avail_sym = [elem.name for elem in SymmetryType]
+    assert (
+        symmetry in avail_sym
+    ), f"Default symmetry '{symmetry}' is not supported by {SymmetryType}"
+
+    ielem = 0
+    while ielem < len(inp):
+        item = inp[ielem]
+
+        if isinstance(item, str):
+            lower_item = item.lower()
+
+            # symmetry
+            if lower_item in avail_sym:
+                symmetry = lower_item
+                ielem += 1
+                continue
+
+            # symmetry, "sym="
+            # if lower_item.startswith("sym="):
+            #     symmetry = lower_item.split("=")[1]
+            #     ielem += 1
+            #     continue
+
+            # constant label
+            label = item
+            parts = label.split("/")
+            if len(parts) == 2 and all(parts):
+                name, units = parts
+                if name.lower() not in (elem.lower() for elem in avail_const):
+                    raise ValueError(
+                        f"Unknown input constant '{name}', supported values: {avail_const}"
+                    )
+                if units.lower() not in (elem.lower() for elem in avail_units):
+                    raise ValueError(
+                        f"Unknown input units '{units}', supported values: {avail_units}"
+                    )
+                const[(name, units)] = inp[ielem + 1]
+            else:
+                raise ValueError(
+                    f"Unexpected input for rotational constant: '{label}', expected format: name/units, e.g. 'A/MHz'"
+                )
+            ielem += 2
+
+        else:
+            raise ValueError(f"Unexpected item at position {ielem}: {item}")
+
+    return const, symmetry
