@@ -56,7 +56,8 @@ class C2(Symmetry):
 
     @staticmethod
     def irrep_from_k_tau(k: int, tau: Literal[0, 1]) -> str:
-        return {0: "A", 1: "B"}[tau]
+        k_mod_2 = k % 2
+        return {(0, 0): "A", (0, 1): "B", (1, 0): "B", (1, 1): "A"}[(k_mod_2, tau)]
 
 
 @register
