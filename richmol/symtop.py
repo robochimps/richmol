@@ -388,6 +388,134 @@ def rotme_cor(j: int, linear: bool = False, sym: Symmetry = SymmetryType.d2):
     return jnp.real(res), k_list, jktau_list
 
 
+def rotme_watson_s(
+    j: int,
+    rot_a: float | None,
+    rot_b: float,
+    rot_c: float | None,
+    rot_const: dict[str, float],
+    sym: Symmetry = SymmetryType.d2,
+):
+    if (rot_a is None) != (rot_c is None):
+        raise ValueError(
+            "Parameters 'rot_a' and 'rot_c' must both be provided or both left as None.",
+        )
+
+    linear = False
+    if rot_a is None or rot_b is None:
+        linear = True
+
+    k_list, jktau_list, coefs = wang_coefs(j, linear, sym)
+    j2 = jnp.array(
+        [[_overlap((j, k1, 1), _jj(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    j4 = jnp.array(
+        [[_overlap((j, k1, 1), _j4(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    j6 = jnp.array(
+        [[_overlap((j, k1, 1), _j6(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    jz2 = jnp.array(
+        [[_overlap((j, k1, 1), _jz_jz(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    jz4 = jnp.array(
+        [[_overlap((j, k1, 1), _jz4(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    jz6 = jnp.array(
+        [[_overlap((j, k1, 1), _jz6(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    j2jz2 = jnp.array(
+        [[_overlap((j, k1, 1), _j2_jz2(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    j4jz2 = jnp.array(
+        [[_overlap((j, k1, 1), _j4_jz2(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    j2jz4 = jnp.array(
+        [[_overlap((j, k1, 1), _j2_jz4(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    jp2 = jnp.array(
+        [[_overlap((j, k1, 1), _jplus_jplus(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    jm2 = jnp.array(
+        [
+            [_overlap((j, k1, 1), _jminus_jminus(j, k2)) for k2 in k_list]
+            for k1 in k_list
+        ]
+    )
+    jp4 = jnp.array(
+        [[_overlap((j, k1, 1), _jplus4(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    jm4 = jnp.array(
+        [[_overlap((j, k1, 1), _jminus4(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    jp6 = jnp.array(
+        [[_overlap((j, k1, 1), _jplus6(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+    jm6 = jnp.array(
+        [[_overlap((j, k1, 1), _jminus6(j, k2)) for k2 in k_list] for k1 in k_list]
+    )
+
+    # rigid-rotor Hamiltonian
+
+    if rot_a is None or rot_c is None:
+        # linear
+        ham = rot_b * j2
+    elif abs(rot_c - rot_b) < abs(rot_a - rot_b):
+        # near-prolate
+        print("axes convention: a -> z (near-prolate)")
+        ham = (
+            (jp2 + jm2) * (rot_b - rot_c) / 4
+            + jz2 * (2 * rot_a - rot_b - rot_c) / 2
+            + (rot_b + rot_c) / 2 * j2
+        )
+    else:
+        # near-oblate
+        ham = (
+            (jp2 + jm2) * (rot_a - rot_b) / 4
+            + jz2 * (2 * rot_c - rot_a - rot_b) / 2
+            + (rot_a + rot_b) / 2 * j2
+        )
+        print("axes convention: c -> z (near-oblate)")
+
+    # effective Hamiltonian
+
+    expr = {}
+    expr["DeltaJ"] = -j4
+    expr["DeltaJK"] = -j2jz2
+    expr["DeltaK"] = -jz4
+    expr["d1"] = j2 * (jp2 + jm2)
+    expr["d2"] = jp4 + jm4
+    expr["HJ"] = j6
+    expr["HJK"] = j4jz2
+    expr["HKJ"] = j2jz4
+    expr["HK"] = jz6
+    expr["h1"] = j4 * (jp2 + jm2)
+    expr["h2"] = j2 * (jp4 + jm4)
+    expr["h3"] = jp6 + jm6
+
+    for name, const in rot_const.items():
+        if name.upper() in ("A", "B", "C"):
+            continue
+        # print(f"add Watson-S term '{name}' = {const}")
+        try:
+            ham = ham + const * expr[name]
+        except KeyError:
+            raise ValueError(
+                f"Uknown keys in rotational constants input 'rot_const': {name}.\n"
+                f"Valid keys: {list(expr.keys())}"
+            )
+
+    # transform from |j,k> to Wang |j,|k|,tau> basis
+    res = jnp.einsum("ki,kl,lj->ij", jnp.conj(coefs), ham, coefs)
+
+    max_imag = jnp.max(jnp.abs(jnp.imag(res)))
+    assert (
+        max_imag < 1e-10
+    ), f"<J',k',tau'|Watson-S|J,k,tau> matrix elements are not real-valued, max imaginary component: {max_imag}"
+
+    return jnp.real(res), k_list, jktau_list
+
+
 def rotme_watson_a(
     j: int,
     rot_const: dict[str, float],
