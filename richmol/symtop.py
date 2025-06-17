@@ -388,14 +388,33 @@ def rotme_cor(j: int, linear: bool = False, sym: Symmetry = SymmetryType.d2):
     return jnp.real(res), k_list, jktau_list
 
 
-def rotme_watson_s(
+def rotme_watson(
     j: int,
     rot_a: float | None,
     rot_b: float,
     rot_c: float | None,
     rot_const: dict[str, float],
+    form: Literal["S", "A"],
     sym: Symmetry = SymmetryType.d2,
 ):
+    r"""Watson-type asymmetric top Hamiltonian in S or A standard reduced form
+    (J. K. G. Watson in "Vibrational Spectra and Structure" (Ed: J. Durig) Vol 6 p 1, Elsevier, Amsterdam, 1977).
+
+    S-reduced form:
+
+        :math:`H = H_{rr} - \Delta_{J} * J^{4} - \Delta_{JK} * J^{2} * J_{z}^{2} - \Delta_{K} * J_{z}^{4}`
+        :math:`+ d_{1} * J^{2} * (J_{+}^{2} + J_{-}^{2}) + d_{2} * (J_{+}^{4} + J_{-}^{4})`
+        :math:`+ H_{J} * J^{6} + H_{JK} * J^{4} * J_{z}^{2} + H_{KJ} * J^{2} * J_{z}^{4} + H_{K} * J_{z}^{6}`
+        :math:`+ h_{1} * J^{4} * (J_{+}^{2} + J_{-}^{2}) + h_{2} * J^{2} * (J_{+}^{4} + J_{-}^{4})`
+        :math:`+ h_{3} * (J_{+}^{6} + J_{-}^{6})`
+
+    A-reduced form:
+
+        :math:`H = H_{rr} - \Delta_{J} * J^{4} - \Delta_{JK} * J^{2} * J_{z}^{2} - \Delta_{K} * J_{z}^{4}`
+        :math:`-\\frac{1}{2} * [ \delta_J_{1} * J^{2} + \delta_{k} * J_{z}^{2}, J_{+}^{2} + J_{-}^{2} ]_{+}`
+        :math:`+ H_{J} * J^{6} + H_{JK} * J^{4} * J_{z}^{2} + H_{KJ} * J^{2} * J_{z}^{4} + H_{K} * J_{z}^{6}`
+        :math:`+ \\frac{1}{2} * [ \phi_{J} * J^{4} + \phi_{JK} * J^{2} * J_{z}^{2} + \phi_{K} * J_{z}^{4}, J_{+}^{2} + J_{-}^{2} ]_{+}`
+    """
     if (rot_a is None) != (rot_c is None):
         raise ValueError(
             "Parameters 'rot_a' and 'rot_c' must both be provided or both left as None.",
@@ -480,23 +499,44 @@ def rotme_watson_s(
     # effective Hamiltonian
 
     expr = {}
-    expr["DeltaJ"] = -j4
-    expr["DeltaJK"] = -j2jz2
-    expr["DeltaK"] = -jz4
-    expr["d1"] = j2 * (jp2 + jm2)
-    expr["d2"] = jp4 + jm4
-    expr["HJ"] = j6
-    expr["HJK"] = j4jz2
-    expr["HKJ"] = j2jz4
-    expr["HK"] = jz6
-    expr["h1"] = j4 * (jp2 + jm2)
-    expr["h2"] = j2 * (jp4 + jm4)
-    expr["h3"] = jp6 + jm6
+
+    if form == "S":
+        expr["DeltaJ"] = -j4
+        expr["DeltaJK"] = -j2jz2
+        expr["DeltaK"] = -jz4
+        expr["d1"] = j2 * (jp2 + jm2)
+        expr["d2"] = jp4 + jm4
+        expr["HJ"] = j6
+        expr["HJK"] = j4jz2
+        expr["HKJ"] = j2jz4
+        expr["HK"] = jz6
+        expr["h1"] = j4 * (jp2 + jm2)
+        expr["h2"] = j2 * (jp4 + jm4)
+        expr["h3"] = jp6 + jm6
+
+    elif form == "A":
+        expr["DeltaJ"] = -j4
+        expr["DeltaJK"] = -j2jz2
+        expr["DeltaK"] = -jz4
+        expr["deltaJ"] = -0.5 * (j2 * (jp2 + jm2) + jp2 * j2 + jm2 * j2)
+        expr["deltaK"] = -0.5 * (jz2 * (jp2 + jm2) + jp2 * jz2 + jm2 * jz2)
+        expr["HJ"] = j6
+        expr["HJK"] = j4jz2
+        expr["HKJ"] = j2jz4
+        expr["HK"] = jz6
+        expr["phiJ"] = 0.5 * (j4 * (jp2 + jm2) + jp2 * j4 + jm2 * j4)
+        expr["phiJK"] = 0.5 * (j2jz2 * (jp2 + jm2) + jp2 * j2jz2 + jm2 * j2jz2)
+        expr["phiK"] = 0.5 * (jz4 * (jp2 + jm2) + jp2 * jz4 + jm2 * jz4)
+
+    else:
+        raise ValueError(
+            f"Unknown form of Watson reduced Hamiltonian = '{form}' (available 'S' or 'A')"
+        )
 
     for name, const in rot_const.items():
         if name.upper() in ("A", "B", "C"):
             continue
-        # print(f"add Watson-S term '{name}' = {const}")
+        # print(f"add Watson term '{name}' = {const}")
         try:
             ham = ham + const * expr[name]
         except KeyError:
@@ -511,94 +551,7 @@ def rotme_watson_s(
     max_imag = jnp.max(jnp.abs(jnp.imag(res)))
     assert (
         max_imag < 1e-10
-    ), f"<J',k',tau'|Watson-S|J,k,tau> matrix elements are not real-valued, max imaginary component: {max_imag}"
-
-    return jnp.real(res), k_list, jktau_list
-
-
-def rotme_watson_a(
-    j: int,
-    rot_const: dict[str, float],
-    linear: bool = False,
-    sym: Symmetry = SymmetryType.d2,
-):
-    k_list, jktau_list, coefs = wang_coefs(j, linear, sym)
-    j2 = jnp.array(
-        [[_overlap((j, k1, 1), _jj(j, k2)) for k2 in k_list] for k1 in k_list]
-    )
-    j4 = jnp.array(
-        [[_overlap((j, k1, 1), _j4(j, k2)) for k2 in k_list] for k1 in k_list]
-    )
-    j6 = jnp.array(
-        [[_overlap((j, k1, 1), _j6(j, k2)) for k2 in k_list] for k1 in k_list]
-    )
-    jz2 = jnp.array(
-        [[_overlap((j, k1, 1), _jz_jz(j, k2)) for k2 in k_list] for k1 in k_list]
-    )
-    jz4 = jnp.array(
-        [[_overlap((j, k1, 1), _jz4(j, k2)) for k2 in k_list] for k1 in k_list]
-    )
-    jz6 = jnp.array(
-        [[_overlap((j, k1, 1), _jz6(j, k2)) for k2 in k_list] for k1 in k_list]
-    )
-    j2jz2 = jnp.array(
-        [[_overlap((j, k1, 1), _j2_jz2(j, k2)) for k2 in k_list] for k1 in k_list]
-    )
-    j4jz2 = jnp.array(
-        [[_overlap((j, k1, 1), _j4_jz2(j, k2)) for k2 in k_list] for k1 in k_list]
-    )
-    j2jz4 = jnp.array(
-        [[_overlap((j, k1, 1), _j2_jz4(j, k2)) for k2 in k_list] for k1 in k_list]
-    )
-    jp2 = jnp.array(
-        [[_overlap((j, k1, 1), _jplus_jplus(j, k2)) for k2 in k_list] for k1 in k_list]
-    )
-    jm2 = jnp.array(
-        [
-            [_overlap((j, k1, 1), _jminus_jminus(j, k2)) for k2 in k_list]
-            for k1 in k_list
-        ]
-    )
-
-    expr = {}
-    expr["DeltaJ"] = -j4
-    expr["DeltaJK"] = -j2jz2
-    expr["DeltaK"] = -jz4
-    expr["deltaJ"] = -0.5 * (j2 * (jp2 + jm2) + jp2 * j2 + jm2 * j2)
-    expr["deltaK"] = -0.5 * (jz2 * (jp2 + jm2) + jp2 * jz2 + jm2 * jz2)
-    expr["HJ"] = j6
-    expr["HJK"] = j4jz2
-    expr["HKJ"] = j2jz4
-    expr["HK"] = jz6
-    expr["phiJ"] = 0.5 * (j4 * (jp2 + jm2) + jp2 * j4 + jm2 * j4)
-    expr["phiJK"] = 0.5 * (j2jz2 * (jp2 + jm2) + jp2 * j2jz2 + jm2 * j2jz2)
-    expr["phiK"] = 0.5 * (jz4 * (jp2 + jm2) + jp2 * jz4 + jm2 * jz4)
-
-    # check input keys for rotational constants
-    expr_keys = list(expr.keys())
-    inp_keys = list(rot_const.keys())
-    unknown_keys = set(inp_keys) - set(expr_keys)
-    if unknown_keys:
-        raise ValueError(
-            f"Uknown keys in rotational constants input 'rot_const': {unknown_keys}.\n"
-            f"Valid keys: {expr_keys}"
-        )
-
-    # build effective Hamiltonian (without rigid-rotor part)
-    ham = 0
-    for key, val in expr.items():
-        try:
-            const = rot_const[key]
-            print(f"add Watson-A term '{key}' = {const}")
-            ham = ham + const * val
-        except AttributeError:
-            pass
-    res = jnp.einsum("ki,kl,lj->ij", jnp.conj(coefs), ham, coefs)
-
-    max_imag = jnp.max(jnp.abs(jnp.imag(res)))
-    assert (
-        max_imag < 1e-12
-    ), f"<J',k',tau'|Watson-A|J,k,tau> matrix elements are not real-valued, max imaginary component: {max_imag}"
+    ), f"<J',k',tau'|Watson|J,k,tau> matrix elements are not real-valued, max imaginary component: {max_imag}"
 
     return jnp.real(res), k_list, jktau_list
 

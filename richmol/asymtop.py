@@ -12,7 +12,7 @@ from scipy.sparse import csr_array, diags
 from scipy.spatial.transform import Rotation
 
 from .symmetry import SymmetryType
-from .symtop import rotme_rot, symtop_on_grid_split_angles, rotme_watson_s
+from .symtop import rotme_rot, symtop_on_grid_split_angles, rotme_watson
 from .units import UnitType
 
 jax.config.update("jax_enable_x64", True)
@@ -110,8 +110,10 @@ class RotStates:
         self.quanta = self._dict_to_vec(self.quanta_dict)
 
     @classmethod
-    def watson_s(cls, max_j: int, inp, print_enr: bool = False):
-        print("\nCompute rotational solutions using Watson-S effective Hamiltonian")
+    def watson(cls, max_j: int, inp, print_enr: bool = False):
+        print(
+            "\nCompute rotational solutions using Watson's effective Hamiltonian approach"
+        )
         avail_const = [
             "A",
             "B",
@@ -140,6 +142,18 @@ class RotStates:
         print("Input rotational constants (MHz):")
         for name, val in rot_const.items():
             print(f" {name:>10} " f"{val:18.12f} ")
+
+        if any(
+            elem in rot_const for elem in ("deltaJ", "deltaK", "phiJ", "phiJK", "phiK")
+        ):
+            watson_form = "A"
+        elif any(elem in rot_const for elem in ("d1", "d2", "h1", "h2", "h3")):
+            watson_form = "S"
+        else:
+            raise ValueError(
+                "Cannot infer type of Watson Hamiltonian (S or A) from input rotational constants."
+            )
+        print(f"Watson reduction form: {watson_form}")
 
         # read A, B, C constants
         if {"A", "B", "C"}.issubset(rot_const.keys()):
@@ -170,7 +184,9 @@ class RotStates:
 
         print("Symmetry group:", sym.name)
 
-        ham_func = lambda j: rotme_watson_s(j, rot_a, rot_b, rot_c, rot_const, sym)
+        ham_func = lambda j: rotme_watson(
+            j, rot_a, rot_b, rot_c, rot_const, watson_form, sym
+        )
 
         return cls._solve(
             max_j,
