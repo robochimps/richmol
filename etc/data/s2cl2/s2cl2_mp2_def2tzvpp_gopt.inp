@@ -1,0 +1,15 @@
+# avogadro generated ORCA input file 
+# Basic Mode
+# 
+! MP2 TIGHTSCF TIGHTOPT OPT def2-TZVPP 
+
+%MaxCore 100000
+
+* xyz 0 1
+   S        0.61200        0.74680        0.74340
+   S       -0.61200       -0.74680        0.74340
+  Cl        0.00000        2.07890       -0.69960
+  Cl        0.00000       -2.07890       -0.69960
+*
+
+

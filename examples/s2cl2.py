@@ -15,7 +15,7 @@ atom_masses = [atom_mass(atom) for atom in atom_labels]
 atom_masses_35_37 = [atom_mass(atom) for atom in atom_labels_35_37]
 
 # Cartesian coordinates of atoms from file:
-#   ab_initio/s2cl2/s2cl2_mp2_def2tzvpp_gopt.xyz
+#   etc/data/s2cl2/s2cl2_mp2_def2tzvpp_gopt.xyz
 
 # Cartesian coordinates in Angstrom
 atom_xyz = np.array(
@@ -28,7 +28,7 @@ atom_xyz = np.array(
 )
 
 # Dipole moment and polarizability from file:
-#   ab_initio/s2cl2/s2cl2_b3lyp_def2tzvpp_pol.out
+#   etc/data/s2cl2/s2cl2_b3lyp_def2tzvpp_pol.out
 
 # molecular-frame dipole moment in au
 dip_mol = [0.0000, 0.0000, 0.3647]
@@ -41,7 +41,7 @@ pol_mol = [
 ]
 
 # Electric field gradient from file:
-#   ab_initio/s2cl2/s2cl2_rks_def2tzvpp_efg_ent.out
+#   etc/data/s2cl2/s2cl2_rks_def2tzvpp_efg_ent.out
 
 # molecular-frame EFG tensor on Cl1 in au**-3
 efg_mol_cl1 = [
