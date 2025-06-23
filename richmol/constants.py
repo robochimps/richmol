@@ -76,6 +76,11 @@ ENR_INVCM_JOULE = Constant(
     doc="To convert from Energy[cm^-1] into Energy[Joule]",
 )
 
+ENR_INVCM_MHZ = Constant(
+    val=constants.value("speed of light in vacuum") * 1e-4,
+    doc="To convert from Energy[cm^-1] to Energy[MHz]",
+)
+
 DIP_X_FIELD_INVCM = Constant(
     val=DIP_X_FIELD_JOULE / ENR_INVCM_JOULE,
     doc="To convert from Dipole[a.u.] * Field[a.u.] to (Dipole * Field)[cm^-1]",

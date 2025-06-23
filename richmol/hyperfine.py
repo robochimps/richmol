@@ -3,11 +3,13 @@ import py3nj
 from scipy import constants
 from scipy.sparse import block_array, csr_array, diags
 
-from .asymtop import RotStates
+from .asymtop import RotStates, ENERGY_UNITS, Energy_units
 from .cartens import CartTensor, Rank2Tensor, MKTensor
+from .constants import ENR_INVCM_MHZ
 from .nucspin import *
 
 # Conversion from EFG[a.u.]*Q[mb] to EFG*Q[cm^-1]
+
 quad_mb_to_meter2 = 1e-31
 efg_au_to_volts_per_meter2 = constants.value("atomic unit of electric field gradient")
 efg_x_quad_joul = (
@@ -19,6 +21,18 @@ joul_to_invcm = 1 / (
     * constants.value("speed of light in vacuum")
 )
 EFG_X_QUAD_INVCM = efg_x_quad_joul * joul_to_invcm
+EFG_X_QUAD_MHZ = EFG_X_QUAD_INVCM * ENR_INVCM_MHZ
+
+SUPPORTED_QUAD_UNITS = {"mhz": EFG_X_QUAD_MHZ, "invcm": EFG_X_QUAD_INVCM}
+QUAD_UNIT_FAC = {}
+for label in ENERGY_UNITS:
+    try:
+        QUAD_UNIT_FAC[label] = SUPPORTED_QUAD_UNITS[label]
+    except KeyError:
+        raise ValueError(
+            f"Unsupported energy unit '{label}' for quadrupole interaction conversion.\n"
+            f"Supported units: {', '.join(SUPPORTED_QUAD_UNITS)}"
+        )
 
 
 def _symmetry_spin_rotation_placeholder(
@@ -87,6 +101,7 @@ class HyperStates:
     enr0: dict[float, dict[str, np.ndarray]]
     enr: dict[float, dict[str, np.ndarray]]
     vec: dict[float, dict[str, np.ndarray]]
+    enr_units: Energy_units
 
     dim_k: dict[float, dict[str, int]]  # dim_k[f][sym]
     dim_m: dict[float, int]  # dim_m[f]
@@ -223,7 +238,7 @@ class HyperStates:
                 # add quadrupole interaction Hamiltonian
 
                 if len(quad_op_ind) > 0:
-                    print("add quadrupole")
+                    print(f"add quadrupole, energy units: {states.enr_units}")
                     h = (
                         h
                         + _quadrupole_me(
@@ -232,6 +247,7 @@ class HyperStates:
                             [spin_op[i] for i in quad_op_ind],
                             [efg_op[i] for i in quad_op_ind],
                         ).toarray()
+                        * QUAD_UNIT_FAC[states.enr_units]
                     )
 
                 # diagonalization
@@ -243,6 +259,8 @@ class HyperStates:
             self.vec[f] = vec
 
         # add dimensions and state assignment
+
+        self.enr_units = states.enr_units
 
         self.dim_m = {f: int(2 * f) + 1 for f in self.f_list}
         self.dim_k = {
@@ -409,8 +427,7 @@ def _quadrupole_me(
                 )
             )
 
-            me_cm = prefac * me * EFG_X_QUAD_INVCM
-            h_.append(me_cm)
+            h_.append(prefac * me)
 
         h.append(h_)
 

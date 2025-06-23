@@ -1,6 +1,7 @@
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
+from typing import Literal
 
 import jax
 import numpy as np
@@ -36,6 +37,9 @@ EPS = jnp.array(
     dtype=jnp.float64,
 )
 
+ENERGY_UNITS = ("mhz", "invcm")
+Energy_units = Literal[*ENERGY_UNITS]
+
 
 @dataclass
 class RotStates:
@@ -49,6 +53,7 @@ class RotStates:
     r_ind: defaultdict[int, defaultdict[str, np.ndarray]]
     v_ind: defaultdict[int, defaultdict[str, np.ndarray]]
     jktau_list: dict[int, list[tuple[int, int, int, str]]]
+    enr_units: Energy_units
 
     dim_k: dict[int, dict[str, int]] = field(init=False)
     dim_m: dict[int, int] = field(init=False)
@@ -188,6 +193,8 @@ class RotStates:
             j, rot_a, rot_b, rot_c, rot_const, watson_form, sym
         )
 
+        enr_units: Energy_units = "mhz"
+
         return cls._solve(
             max_j,
             sym,
@@ -196,6 +203,7 @@ class RotStates:
             xyz=np.full(1, None),
             linear=linear,
             print_enr=print_enr,
+            enr_units=enr_units,
         )
 
     @classmethod
@@ -321,6 +329,8 @@ class RotStates:
             ham = 0.5 * np.einsum("ab,abij->ij", G, me, optimize="optimal")
             return ham, k_list, jktau_list
 
+        enr_units: Energy_units = "invcm"
+
         return cls._solve(
             max_j,
             sym,
@@ -329,10 +339,21 @@ class RotStates:
             xyz=xyz,
             linear=linear,
             print_enr=print_enr,
+            enr_units=enr_units,
         )
 
     @classmethod
-    def _solve(cls, max_j, sym, ham_func, masses, xyz, linear, print_enr):
+    def _solve(
+        cls,
+        max_j,
+        sym,
+        ham_func,
+        masses,
+        xyz,
+        linear: bool,
+        print_enr: bool,
+        enr_units: Energy_units,
+    ):
 
         # solve for J = 0 .. max_j
 
@@ -368,6 +389,7 @@ class RotStates:
         # print solutions
 
         if print_enr:
+            print("Energy units:", enr_units)
             print(
                 f"{'J':>3} {'Irrep':>5} {'i':>4} {'Energy':>18} {'(J,k,tau,Irrep)':>20} {'c_max²':>16}"
             )
@@ -396,7 +418,17 @@ class RotStates:
                                 )
 
         return cls(
-            masses, xyz, linear, j_list, sym_list, enr, vec, r_ind, v_ind, jktau_list
+            masses,
+            xyz,
+            linear,
+            j_list,
+            sym_list,
+            enr,
+            vec,
+            r_ind,
+            v_ind,
+            jktau_list,
+            enr_units,
         )
 
     def mat(self):
