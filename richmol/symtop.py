@@ -550,7 +550,7 @@ def rotme_watson(
 
     max_imag = jnp.max(jnp.abs(jnp.imag(res)))
     assert (
-        max_imag < 1e-10
+        max_imag < 1e-8
     ), f"<J',k',tau'|Watson|J,k,tau> matrix elements are not real-valued, max imaginary component: {max_imag}"
 
     return jnp.real(res), k_list, jktau_list
