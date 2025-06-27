@@ -12,8 +12,8 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.sparse import csr_array, diags
 from scipy.spatial.transform import Rotation
 
-from .symmetry import SymmetryType
-from .symtop import rotme_rot, symtop_on_grid_split_angles, rotme_watson
+from .rotsym import R0, RalphaPi, RzBeta, wang_symmetry_by_sampling
+from .symtop import rotme_rot, rotme_watson, symtop_on_grid_split_angles
 from .units import UnitType
 
 jax.config.update("jax_enable_x64", True)
@@ -115,10 +115,19 @@ class RotStates:
         self.quanta = self._dict_to_vec(self.quanta_dict)
 
     @classmethod
-    def watson(cls, max_j: int, inp, print_enr: bool = False):
+    def watson(
+        cls,
+        max_j: int,
+        inp,
+        print_enr: bool = False,
+        rotations: list[RzBeta | RalphaPi | R0] = [R0()],
+        irreps: dict[str, list[int]] = {"A": [1]},
+    ):
         print(
             "\nCompute rotational solutions using Watson's effective Hamiltonian approach"
         )
+
+        # constants used by symtop.rotme_watson
         avail_const = [
             "A",
             "B",
@@ -128,6 +137,8 @@ class RotStates:
             "DeltaK",
             "d1",
             "d2",
+            "deltaJ",
+            "deltaK",
             "HJ",
             "HJK",
             "HKJ",
@@ -135,10 +146,14 @@ class RotStates:
             "h1",
             "h2",
             "h3",
+            "phiJ",
+            "phiJK",
+            "phiK",
         ]
         avail_units = ["MHz", "kHz", "Hz"]
-        const, sym_label = _parse_rotconst_input(inp, avail_const, avail_units)
+        const = _parse_rotconst_input(inp, avail_const, avail_units)
 
+        # convert input constants to MHz
         mhz_units = {"mhz": 1, "khz": 1e-3, "hz": 1e-6}  # working units are MHz
         rot_const = {
             name: val * mhz_units[units.lower()] for (name, units), val in const.items()
@@ -148,6 +163,7 @@ class RotStates:
         for name, val in rot_const.items():
             print(f" {name:>10} " f"{val:18.12f} ")
 
+        # determine type of Watson Hamiltonian, A or S
         if any(
             elem in rot_const for elem in ("deltaJ", "deltaK", "phiJ", "phiJK", "phiK")
         ):
@@ -181,29 +197,24 @@ class RotStates:
                 f"Input for A, B, and C rotational constants is not provided"
             )
 
-        try:
-            i = [elem.name for elem in SymmetryType].index(sym_label)
-            sym = [elem for elem in SymmetryType][i]
-        except ValueError:
-            raise ValueError(f"No symmetry '{sym_label}' found") from None
-
-        print("Symmetry group:", sym.name)
-
+        # define Hamiltonian as function of J
         ham_func = lambda j: rotme_watson(
-            j, rot_a, rot_b, rot_c, rot_const, watson_form, sym
+            j, rot_a, rot_b, rot_c, rot_const, watson_form
         )
 
         enr_units: Energy_units = "mhz"
 
+        # solve Schrödinger equation
         return cls._solve(
             max_j,
-            sym,
             ham_func,
             masses=np.full(1, None),
             xyz=np.full(1, None),
             linear=linear,
             print_enr=print_enr,
             enr_units=enr_units,
+            rotations=rotations,
+            irreps=irreps,
         )
 
     @classmethod
@@ -212,6 +223,8 @@ class RotStates:
         max_j: int,
         inp,
         print_enr: bool = False,
+        rotations: list[RzBeta | RalphaPi | R0] = [R0()],
+        irreps: dict[str, list[int]] = {"A": [1]},
     ):
         """Computes rigid rotor states from a given molecular geometry.
 
@@ -222,7 +235,7 @@ class RotStates:
 
             inp (list or tuple):
                 A specification of the molecular geometry, including atomic positions, units,
-                optional mass assignments, and symmetry label. Examples are shown below.
+                and optional mass assignments. Examples are shown below.
 
             print_enr (bool, optional):
                 If True, prints a table of computed rotational energy levels and
@@ -234,7 +247,7 @@ class RotStates:
         1. Standard geometry specification:
 
             >>> xyz = (
-            ...     "bohr", "c2v",
+            ...     "bohr",
             ...     "O", 0.00000000, 0.00000000, 0.12395915,
             ...     "H", 0.00000000, -1.43102686, -0.98366080,
             ...     "H", 0.00000000,  1.43102686, -0.98366080,
@@ -243,7 +256,7 @@ class RotStates:
         2. Custom atomic mass specification to override default atomic masses:
 
             >>> xyz = (
-            ...     "bohr", "c2v",
+            ...     "bohr",
             ...     "O", 0.00000000, 0.00000000, 0.12395915, "m=13.024815",  # custom mass for "O"
             ...     "H", 0.00000000, -1.43102686, -0.98366080,
             ...     "H", 0.00000000,  1.43102686, -0.98366080,
@@ -252,7 +265,7 @@ class RotStates:
         3. Isotope specification by element label:
 
             >>> xyz = (
-            ...     "bohr", "c2v",
+            ...     "bohr",
             ...     "O13", 0.00000000, 0.00000000, 0.12395915,  # oxygen-13 isotope
             ...     "H", 0.00000000, -1.43102686, -0.98366080,
             ...     "H", 0.00000000,  1.43102686, -0.98366080,
@@ -261,7 +274,7 @@ class RotStates:
         """
         print("\nCompute rigid-rotor solutions using molecular geometry as input")
 
-        atom_labels, atom_xyz, atom_masses, units, sym_label = _parse_geom_input(inp)
+        atom_labels, atom_xyz, atom_masses, units = _parse_geom_input(inp)
 
         atom_masses = [
             mass if mass != None else atom_mass(labes)
@@ -293,14 +306,6 @@ class RotStates:
                 f"{z:18.12f}"
             )
 
-        try:
-            i = [elem.name for elem in SymmetryType].index(sym_label)
-            sym = [elem for elem in SymmetryType][i]
-        except ValueError:
-            raise ValueError(f"No symmetry '{sym_label}' found") from None
-
-        print("Symmetry group:", sym.name)
-
         # rotational kinetic energy G-matrix
 
         masses = np.array(atom_masses)
@@ -324,36 +329,49 @@ class RotStates:
 
         print("G-matrix from input Cartesian coordinates (cm^-1):\n", G)
 
+        # define Hamiltonian as function of J
         def ham_func(j):
-            me, k_list, jktau_list = rotme_rot(j=j, linear=linear, sym=sym)
+            me, k_list, jktau_list = rotme_rot(j=j, linear=linear)
             ham = 0.5 * np.einsum("ab,abij->ij", G, me, optimize="optimal")
             return ham, k_list, jktau_list
 
         enr_units: Energy_units = "invcm"
 
+        # solve Schrödinger equation
         return cls._solve(
             max_j,
-            sym,
             ham_func,
             masses=masses,
             xyz=xyz,
             linear=linear,
             print_enr=print_enr,
             enr_units=enr_units,
+            rotations=rotations,
+            irreps=irreps,
         )
 
     @classmethod
     def _solve(
         cls,
         max_j,
-        sym,
         ham_func,
         masses,
         xyz,
         linear: bool,
         print_enr: bool,
         enr_units: Energy_units,
+        rotations: list[RzBeta | RalphaPi | R0],
+        irreps: dict[str, list[int]],
     ):
+        # identify symmetry of symmetric-top function in Wang representation
+
+        sym_table = {}
+        for j in range(max_j + 1):
+            sym_table[j] = wang_symmetry_by_sampling(j, linear, rotations, irreps)
+
+        sym_labels = list(
+            set([sym for sym_j in sym_table.values() for sym in sym_j.values()])
+        )
 
         # solve for J = 0 .. max_j
 
@@ -372,32 +390,39 @@ class RotStates:
         for j in j_list:
             ham, k_list[j], jktau_list[j] = ham_func(j=j)
 
-            for irrep in sym.irreps:
-                print(f"solve for J = {j} and symmetry {irrep} ...")
-                ind = np.where(np.array([elem[-1] for elem in jktau_list[j]]) == irrep)[
-                    0
+            for sym in sym_labels:
+                print(f"solve for J = {j} and symmetry {sym} ...")
+
+                ind = [
+                    jktau_list[j].index(jktau)
+                    for jktau, sym_ in sym_table[j].items()
+                    if sym_ == sym
                 ]
+
+                print(f"number of functions:", len(ind))
+
                 if len(ind) > 0:
                     h = ham[np.ix_(ind, ind)]
                     e, v = np.linalg.eigh(h)
-                    enr[j][irrep] = e
-                    vec[j][irrep] = v
-                    r_ind[j][irrep] = ind
-                    v_ind[j][irrep] = np.array([0] * len(ind))
-                    sym_list[j].append(irrep)
+                    enr[j][sym] = e
+                    vec[j][sym] = v
+                    r_ind[j][sym] = ind
+                    v_ind[j][sym] = np.array([0] * len(ind))
+                    sym_list[j].append(sym)
 
         # print solutions
 
+        print("Energy units:", enr_units)
+
         if print_enr:
-            print("Energy units:", enr_units)
             print(
                 f"{'J':>3} {'Irrep':>5} {'i':>4} {'Energy':>18} {'(J,k,tau,Irrep)':>20} {'c_max²':>16}"
             )
             for j in j_list:
-                for irrep in sym_list[j]:
-                    e = enr[j][irrep]
-                    v = vec[j][irrep]
-                    jktau = [jktau_list[j][i] for i in r_ind[j][irrep]]
+                for sym in sym_list[j]:
+                    e = enr[j][sym]
+                    v = vec[j][sym]
+                    jktau = [jktau_list[j][i] for i in r_ind[j][sym]]
                     for i in range(len(e)):
                         v2 = v[:, i] ** 2
                         largest_ind = np.argsort(v2)[-3:][::-1]
@@ -405,7 +430,7 @@ class RotStates:
                             if ii == 0:
                                 print(
                                     f"{j:3d} "
-                                    f"{irrep:>5} "
+                                    f"{sym:>5} "
                                     f"{i:4d} "
                                     f"{e[i]:18.8f} "
                                     f"{str(jktau[ind]):>20} "
@@ -522,7 +547,7 @@ class RotStates:
         eta = np.random.uniform(0.0, 1.0, size=len(w))
         points = [pts[np.where(w_ > eta)] for w_ in w.T]
         rot_mat = [Rotation.from_euler("ZYZ", pts).as_matrix() for pts in points]
-        ### TODO!!! check "ZYZ" or "zyz"?
+        # TODO!!! check "ZYZ" or "zyz"?
 
         # distribution of the molecular-frame axis `mol_axis` in laboratory frame
         mol_axis = np.array(mol_axis) / np.linalg.norm(mol_axis)
@@ -588,6 +613,7 @@ class RotStates:
         eta = np.random.uniform(0.0, 1.0, size=len(w))
         points = [pts[np.where(w_ > eta)] for w_ in w.T]
         rot_mat = [Rotation.from_euler("ZYZ", pts).as_matrix() for pts in points]
+        # TODO!!! check "ZYZ" or "zyz"?
         return rot_mat
 
     def rot_dens_wp(
@@ -880,7 +906,7 @@ class RotStates:
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[int]]:
 
         rot_k, rot_m, rot_l, k_list, jktau_list = symtop_on_grid_split_angles(
-            j, alpha, beta, gamma
+            j, alpha, beta, gamma, self.linear
         )
 
         rot_ind = self.r_ind[j][sym]
@@ -939,6 +965,10 @@ def check_linear(xyz, tol=1e-8):
         if np.linalg.norm(np.linalg.cross(v0, xyz[i] - xyz[0])) > tol:
             return False
     return True
+
+
+def com(masses, xyz):
+    return np.sum([x * m for x, m in zip(xyz, masses)], axis=0) / np.sum(masses)
 
 
 def inertia_tensor(masses, xyz):
@@ -1001,17 +1031,11 @@ def atom_mass(atom_label: str) -> float:
 
 def _parse_geom_input(inp):
     unit = "angstrom"
-    symmetry = "c1"
     atom_labels = []
     atom_coords = []
     atom_masses = []
 
     avail_units = [elem.name for elem in UnitType]
-    avail_sym = [elem.name for elem in SymmetryType]
-    assert unit in avail_units, f"Default unit '{unit}' is not supported by {UnitType}"
-    assert (
-        symmetry in avail_sym
-    ), f"Default symmetry '{symmetry}' is not supported by {SymmetryType}"
 
     ielem = 0
     while ielem < len(inp):
@@ -1025,18 +1049,6 @@ def _parse_geom_input(inp):
                 unit = lower_item
                 ielem += 1
                 continue
-
-            # symmetry
-            if lower_item in avail_sym:
-                symmetry = lower_item
-                ielem += 1
-                continue
-
-            # symmetry, "sym="
-            # if lower_item.startswith("sym="):
-            #     symmetry = lower_item.split("=")[1]
-            #     ielem += 1
-            #     continue
 
             # atom label
             label = item
@@ -1061,17 +1073,11 @@ def _parse_geom_input(inp):
         else:
             raise ValueError(f"Unexpected item at position {ielem}: {item}")
 
-    return atom_labels, atom_coords, atom_masses, unit, symmetry
+    return atom_labels, atom_coords, atom_masses, unit
 
 
 def _parse_rotconst_input(inp, avail_const, avail_units):
-    symmetry = "c1"
     const = {}
-
-    avail_sym = [elem.name for elem in SymmetryType]
-    assert (
-        symmetry in avail_sym
-    ), f"Default symmetry '{symmetry}' is not supported by {SymmetryType}"
 
     ielem = 0
     while ielem < len(inp):
@@ -1079,18 +1085,6 @@ def _parse_rotconst_input(inp, avail_const, avail_units):
 
         if isinstance(item, str):
             lower_item = item.lower()
-
-            # symmetry
-            if lower_item in avail_sym:
-                symmetry = lower_item
-                ielem += 1
-                continue
-
-            # symmetry, "sym="
-            # if lower_item.startswith("sym="):
-            #     symmetry = lower_item.split("=")[1]
-            #     ielem += 1
-            #     continue
 
             # constant label
             label = item
@@ -1115,4 +1109,4 @@ def _parse_rotconst_input(inp, avail_const, avail_units):
         else:
             raise ValueError(f"Unexpected item at position {ielem}: {item}")
 
-    return const, symmetry
+    return const
