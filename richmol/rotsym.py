@@ -59,8 +59,8 @@ def wang_symmetry_by_sampling(
     linear: bool,
     rotations: list[RalphaPi | RzBeta | R0],
     irreps: dict[str, list[int]],
-    npoints: int = 10,
-    tol: float = 1e-4,
+    npoints: int = 20,
+    tol: float = 1e-6,
 ) -> dict[list[int], str]:
     """Numerically determines the symmetry of rotational wavefunctions in the Wang
     basis representation by evaluating their transformation properties under
@@ -78,7 +78,7 @@ def wang_symmetry_by_sampling(
             character values, in the same order as the `rotations` list.
         npoints (int, optional):
             Number of random points per Euler angle for numerical sampling.
-            Default is 10.
+            Default is 20.
         tol (float, optional):
             Numerical tolerance for interpreting characters as 1 or -1.
             Default is 1e-4.
@@ -114,9 +114,13 @@ def wang_symmetry_by_sampling(
         seen.add(char0)
 
     # random Euler angles for numerical identification of symmetry
-    alpha0 = np.random.uniform(0, 2 * np.pi, npoints)
-    beta0 = np.random.uniform(0, np.pi, npoints)
-    gamma0 = np.random.uniform(0, 2 * np.pi, npoints)
+    def strat_uniform(a, b, n):
+        bins = np.linspace(a, b, n + 1)
+        return bins[:-1] + np.random.uniform(0, (b - a) / n, n)
+
+    alpha0 = strat_uniform(0, 2 * np.pi, npoints)
+    beta0 = strat_uniform(0, np.pi, npoints)
+    gamma0 = strat_uniform(0, 2 * np.pi, npoints)
 
     # reference Wang functions on grid of Euler angles
     rot_k0, rot_m0, rot_l0, k_list, jktau_list = symtop_on_grid_split_angles(
@@ -140,15 +144,15 @@ def wang_symmetry_by_sampling(
         psi = np.einsum("klg,lb->kgb", rot_k, rot_l, optimize="optimal")
 
         # determine effect of rotation on each Wang function
-        for jktau, char in zip(jktau_list, psi / psi0):
-            if np.allclose(char, 1, atol=tol):
+        for jktau, char in zip(jktau_list, np.mean(np.real(psi / psi0), axis=(1, 2))):
+            if abs(char - 1) < tol:
                 p = 1
-            elif np.allclose(char, -1, atol=tol):
+            elif abs(char + 1) < tol:
                 p = -1
             else:
                 raise ValueError(
                     f"Symmetry equivalent rotation {rot} does not transform |J,k,τ⟩ to ±|J,k,τ⟩ "
-                    + f"for |J,k,τ⟩ = |{jktau}⟩,\nmax(|psi/psi0| - 1) = {np.max(np.abs(char) - 1)}, "
+                    + f"for |J,k,τ⟩ = |{jktau}⟩,\nmean(psi / psi0) = {char}, "
                     + f"tol = {tol}"
                 )
             try:
