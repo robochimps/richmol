@@ -6,24 +6,17 @@ import numpy as np
 from jax import config
 from jax import numpy as jnp
 
-from .symmetry import Symmetry, SymmetryType
 from .wigner import _jy_eig, wigner_D
 
 config.update("jax_enable_x64", True)
 
 
-def wang_coefs(j: int, linear: bool, sym: Symmetry | None = None):
-    if sym is None:
-        irrep_from_k_tau = lambda k, t: ""
-    else:
-        irrep_from_k_tau = sym.irrep_from_k_tau
-
+def wang_coefs(j: int, linear: bool):
     k_list = [k for k in range(-j, j + 1)]
     if linear:
         k = 0
         t = cast(Literal[0, 1], j % 2)
-        s = irrep_from_k_tau(k, t)
-        jktau_list = [(j, k, t, s)]
+        jktau_list = [(j, k, t)]
     else:
         jktau_list = []
         for k in range(0, j + 1):
@@ -32,11 +25,10 @@ def wang_coefs(j: int, linear: bool, sym: Symmetry | None = None):
             else:
                 tau = [0, 1]
             for t in tau:
-                s = irrep_from_k_tau(k, t)
-                jktau_list.append((j, k, t, s))
+                jktau_list.append((j, k, t))
 
     coefs = np.zeros((len(k_list), len(jktau_list)), dtype=np.complex128)
-    for i, (j, k, tau, s) in enumerate(jktau_list):
+    for i, (j, k, tau) in enumerate(jktau_list):
         c, k_pair = wang_coefs_jktau(j, k, tau)
         for kk, cc in zip(k_pair, c):
             i_k = k_list.index(kk)
@@ -297,8 +289,8 @@ def _overlap(jkc1, jkc2):
     )
 
 
-def rotme_ovlp(j: int, linear: bool = False, sym: Symmetry = SymmetryType.d2):
-    k_list, jktau_list, coefs = wang_coefs(j, linear, sym)
+def rotme_ovlp(j: int, linear: bool):
+    k_list, jktau_list, coefs = wang_coefs(j, linear)
     s = jnp.array(
         [[_overlap((j, k1, 1), (j, k2, 1)) for k2 in k_list] for k1 in k_list]
     )
@@ -310,8 +302,8 @@ def rotme_ovlp(j: int, linear: bool = False, sym: Symmetry = SymmetryType.d2):
     return jnp.real(res), k_list, jktau_list
 
 
-def rotme_rot(j: int, linear: bool = False, sym: Symmetry = SymmetryType.d2):
-    k_list, jktau_list, coefs = wang_coefs(j, linear, sym)
+def rotme_rot(j: int, linear: bool):
+    k_list, jktau_list, coefs = wang_coefs(j, linear)
     jxx = jnp.array(
         [[_overlap((j, k1, 1), _jx_jx(j, k2)) for k2 in k_list] for k1 in k_list]
     )
@@ -348,8 +340,8 @@ def rotme_rot(j: int, linear: bool = False, sym: Symmetry = SymmetryType.d2):
     return jnp.real(res), k_list, jktau_list
 
 
-def rotme_rot_diag(j: int, linear: bool = False, sym: Symmetry = SymmetryType.d2):
-    k_list, jktau_list, coefs = wang_coefs(j, linear, sym)
+def rotme_rot_diag(j: int, linear: bool):
+    k_list, jktau_list, coefs = wang_coefs(j, linear)
     jxx = jnp.array(
         [[_overlap((j, k1, 1), _jx_jx(j, k2)) for k2 in k_list] for k1 in k_list]
     )
@@ -368,8 +360,8 @@ def rotme_rot_diag(j: int, linear: bool = False, sym: Symmetry = SymmetryType.d2
     return jnp.real(res), k_list, jktau_list
 
 
-def rotme_cor(j: int, linear: bool = False, sym: Symmetry = SymmetryType.d2):
-    k_list, jktau_list, coefs = wang_coefs(j, linear, sym)
+def rotme_cor(j: int, linear: bool):
+    k_list, jktau_list, coefs = wang_coefs(j, linear)
     jx = jnp.array(
         [[_overlap((j, k1, 1), _jx(j, k2)) for k2 in k_list] for k1 in k_list]
     )
@@ -395,7 +387,6 @@ def rotme_watson(
     rot_c: float | None,
     rot_const: dict[str, float],
     form: Literal["S", "A"],
-    sym: Symmetry = SymmetryType.d2,
 ):
     r"""Watson-type asymmetric top Hamiltonian in S or A standard reduced form
     (J. K. G. Watson in "Vibrational Spectra and Structure" (Ed: J. Durig) Vol 6 p 1, Elsevier, Amsterdam, 1977).
@@ -417,14 +408,15 @@ def rotme_watson(
     """
     if (rot_a is None) != (rot_c is None):
         raise ValueError(
-            "Parameters 'rot_a' and 'rot_c' must both be provided or both left as None.",
+            "Parameters 'rot_a' and 'rot_c' must both be provided "
+            + "or both left as None (for linear molecule).",
         )
 
     linear = False
     if rot_a is None or rot_b is None:
         linear = True
 
-    k_list, jktau_list, coefs = wang_coefs(j, linear, sym)
+    k_list, jktau_list, coefs = wang_coefs(j, linear)
     j2 = jnp.array(
         [[_overlap((j, k1, 1), _jj(j, k2)) for k2 in k_list] for k1 in k_list]
     )
@@ -477,24 +469,29 @@ def rotme_watson(
     # rigid-rotor Hamiltonian
 
     if rot_a is None or rot_c is None:
-        # linear
+        # linear molecule
         ham = rot_b * j2
     elif abs(rot_c - rot_b) < abs(rot_a - rot_b):
-        # near-prolate
-        print("axes convention: a -> z (near-prolate)")
+        # near-prolate top
+        print("Axes convention for near-prolate: I(r), xyz = bca")
+        print(
+            "Remark: manually apply permutation (132) to other input "
+            + "Cartesian tensors (like dipole moment) in the PAS frame,\n"
+            + "   e.g., using permutation matrix np.array([[0,1,0],[0,0,1],[1,0,0]])"
+        )
         ham = (
             (jp2 + jm2) * (rot_b - rot_c) / 4
             + jz2 * (2 * rot_a - rot_b - rot_c) / 2
             + (rot_b + rot_c) / 2 * j2
         )
     else:
-        # near-oblate
+        # near-oblate top
         ham = (
             (jp2 + jm2) * (rot_a - rot_b) / 4
             + jz2 * (2 * rot_c - rot_a - rot_b) / 2
             + (rot_a + rot_b) / 2 * j2
         )
-        print("axes convention: c -> z (near-oblate)")
+        print("Axes convention for near-oblate: III(r), xyz = abc")
 
     # effective Hamiltonian
 
@@ -556,8 +553,8 @@ def rotme_watson(
     return jnp.real(res), k_list, jktau_list
 
 
-def symtop_on_grid(j: int, grid, linear: bool = False, sym: Symmetry = SymmetryType.d2):
-    k_list, jktau_list, coefs = wang_coefs(j, linear, sym)
+def symtop_on_grid(j: int, grid, linear: bool):
+    k_list, jktau_list, coefs = wang_coefs(j, linear)
     # psi[J+m, J+k, ipoint] for k,m = -J..J
     psi = np.sqrt((2 * j + 1) / (8 * np.pi**2)) * np.conj(wigner_D(j, grid))
     ind = [k for k in range(-j, j + 1)]
@@ -566,15 +563,8 @@ def symtop_on_grid(j: int, grid, linear: bool = False, sym: Symmetry = SymmetryT
     return res, k_list, jktau_list
 
 
-def symtop_on_grid_split_angles(
-    j: int,
-    alpha,
-    beta,
-    gamma,
-    linear: bool = False,
-    sym: Symmetry = SymmetryType.d2,
-):
-    k_list, jktau_list, coefs = wang_coefs(j, linear, sym)
+def symtop_on_grid_split_angles(j: int, alpha, beta, gamma, linear: bool):
+    k_list, jktau_list, coefs = wang_coefs(j, linear)
     ind = list(range(-j, j + 1))
     wang_map = [ind.index(k) for k in k_list]
     ind = np.array(ind)
