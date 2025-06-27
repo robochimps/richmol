@@ -998,6 +998,17 @@ def inertia_tensor(masses, xyz):
     return imat
 
 
+def write_xyz(filename, atom_labels: list[str], atom_xyz: np.ndarray, comment: str = ""):
+    if len(atom_labels) != len(atom_xyz):
+        raise ValueError("Length of 'atom_labels' and 'atom_xyz' must match.")
+
+    with open(filename, "w") as f:
+        f.write(f"{len(atom_labels)}\n")
+        f.write(f"{comment}\n")
+        for atom, (x, y, z) in zip(atom_labels, atom_xyz):
+            f.write(f"{atom:2} {x:15.8f} {y:15.8f} {z:15.8f}\n")
+
+
 def rotational_constants(masses, xyz):
     imat = inertia_tensor(masses, xyz)
     d, v = np.linalg.eigh(imat)
