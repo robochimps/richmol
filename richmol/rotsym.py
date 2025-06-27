@@ -81,7 +81,7 @@ def wang_symmetry_by_sampling(
             Default is 20.
         tol (float, optional):
             Numerical tolerance for interpreting characters as 1 or -1.
-            Default is 1e-4.
+            Default is 1e-6.
 
     Returns:
         dict[list[int], str]:
@@ -96,7 +96,7 @@ def wang_symmetry_by_sampling(
         )
 
     # check if number of rotations and number of characters match
-    if any(len(rotations) != len(char) for char in irreps):
+    if any(len(rotations) != len(char) for char in irreps.values()):
         raise ValueError(
             "Number characters for each symmetry in 'irreps' dictionary must be equal "
             + "to the number of symmetry equivalent rotations in 'rotations' list"
@@ -126,8 +126,9 @@ def wang_symmetry_by_sampling(
     rot_k0, rot_m0, rot_l0, k_list, jktau_list = symtop_on_grid_split_angles(
         j, alpha0, beta0, gamma0, linear=linear
     )
-    # neglect M-dependence
-    psi0 = np.einsum("klg,lb->kgb", rot_k0, rot_l0, optimize="optimal")
+    psi0 = np.einsum(
+        "klg,lb,la->kgba", rot_k0, rot_l0, np.mean(rot_m0, axis=0), optimize="optimal"
+    )
 
     # determine effect of symmetry equivalent rotation in `sym_rot` on Wang functions
 
@@ -141,10 +142,14 @@ def wang_symmetry_by_sampling(
         rot_k, rot_m, rot_l, _, _ = symtop_on_grid_split_angles(
             j, alpha, beta, gamma, linear=linear
         )
-        psi = np.einsum("klg,lb->kgb", rot_k, rot_l, optimize="optimal")
+        psi = np.einsum(
+            "klg,lb,la->kgba", rot_k, rot_l, np.mean(rot_m, axis=0), optimize="optimal"
+        )
 
         # determine effect of rotation on each Wang function
-        for jktau, char in zip(jktau_list, np.mean(np.real(psi / psi0), axis=(1, 2))):
+        for jktau, char in zip(
+            jktau_list, np.mean(np.real(psi / psi0), axis=(1, 2, 3))
+        ):
             if abs(char - 1) < tol:
                 p = 1
             elif abs(char + 1) < tol:
