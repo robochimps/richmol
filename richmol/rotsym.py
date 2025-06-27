@@ -1,5 +1,6 @@
 import numpy as np
-from .symtop import symtop_on_grid_split_angles
+
+from .symtop import symtop_on_grid_split_angles, wang_coefs
 
 
 class R0:
@@ -113,6 +114,13 @@ def wang_symmetry_by_sampling(
             )
         seen.add(char0)
 
+    # default behaviour
+    if len(rotations) == 1 and isinstance(rotations[0], R0):
+        k_list, jktau_list, _ = wang_coefs(j, linear)
+        sym = list(irreps.keys())[0]
+        symmetry_table = {jktau: sym for jktau in jktau_list}
+        return symmetry_table
+
     # random Euler angles for numerical identification of symmetry
     def strat_uniform(a, b, n):
         bins = np.linspace(a, b, n + 1)
@@ -124,7 +132,7 @@ def wang_symmetry_by_sampling(
 
     # reference Wang functions on grid of Euler angles
     rot_k0, rot_m0, rot_l0, k_list, jktau_list = symtop_on_grid_split_angles(
-        j, alpha0, beta0, gamma0, linear=linear
+        j, alpha0, beta0, gamma0, linear
     )
     psi0 = np.einsum(
         "klg,lb,la->kgba", rot_k0, rot_l0, np.mean(rot_m0, axis=0), optimize="optimal"
@@ -140,7 +148,7 @@ def wang_symmetry_by_sampling(
 
         # Wang functions on grid of Euler angles
         rot_k, rot_m, rot_l, _, _ = symtop_on_grid_split_angles(
-            j, alpha, beta, gamma, linear=linear
+            j, alpha, beta, gamma, linear
         )
         psi = np.einsum(
             "klg,lb,la->kgba", rot_k, rot_l, np.mean(rot_m, axis=0), optimize="optimal"
