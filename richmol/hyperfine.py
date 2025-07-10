@@ -127,6 +127,7 @@ class HyperStates:
         spin_op: list[SpinOperator],
         efg_op: list[CartTensor | None] = [],
         symmetry_rules=_symmetry_spin_rotation_placeholder,
+        keep_h: bool = False,
     ):
         print("\nCompute hyperfine states")
 
@@ -213,12 +214,14 @@ class HyperStates:
         self.enr0 = {}
         self.enr = {}
         self.vec = {}
+        self.h = {}
 
         for f in self.f_list:
 
             enr0 = {}
             enr = {}
             vec = {}
+            h_sym = {}
 
             for sym in self.f_sym_list[f]:
 
@@ -252,11 +255,21 @@ class HyperStates:
 
                 # diagonalization
 
+                if not np.allclose(np.imag(h), 0, atol=1e-14):
+                    raise ValueError(
+                        f"Total Hamiltonian matrix is not real-valued, max(abs(H.imag)) = {np.max(abs(np.imag(h)))}"
+                    )
+                h = np.real(h)
+
                 enr[sym], vec[sym] = np.linalg.eigh(h)
+                if keep_h:
+                    h_sym[sym] = h - np.diag(enr0[sym])
 
             self.enr0[f] = enr0
             self.enr[f] = enr
             self.vec[f] = vec
+            if keep_h:
+                self.h[f] = h_sym
 
         # add dimensions and state assignment
 
@@ -547,7 +560,7 @@ class HyperCartTensor(MKTensor):
                     or (j_sym1, j_sym2) not in kmat[(j1, j2)]
                     or omega not in kmat[(j1, j2)][(j_sym1, j_sym2)]
                 ):
-                    k_me_.append(np.zeros((j_dim1, j_dim2)))
+                    k_me_.append(csr_array(np.zeros((j_dim1, j_dim2))))
                     continue
 
                 fac = j1 + spin2[-1] + f2 + j2
