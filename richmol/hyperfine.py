@@ -357,6 +357,101 @@ class HyperStates:
             self.quanta_dict_op[f] = quanta_sym_op
         self.quanta = self._dict_to_vec(self.quanta_dict)
 
+    def rot_dens(
+        self,
+        rot_states: RotStates,
+        f1: float,
+        sym1: str,
+        istate1: int,
+        f2: float,
+        sym2: str,
+        istate2: int,
+        alpha: np.ndarray,
+        beta: np.ndarray,
+        gamma: np.ndarray,
+        coef_thresh: float = 1e-8,
+    ) -> np.ndarray:
+        """Computes the reduced rotational probability density for two selected hyperfine
+        states as a function of Euler angles α, β, γ.
+        The density is obtained by integrating over vibrational and nuclear spin coordinates,
+        assuming an orthonormal vibrational basis.
+
+        Args:
+            rot_states (RotStates):
+                Molecular rotational or rovibrational energy states
+                used as the basis for hyperfine calculations.
+
+            f1 (float):
+                Quantum number of the total angular momentum F for the bra-state.
+
+            sym1 (str):
+                Symmetry label of the bra-state.
+
+            istate1 (int):
+                Index of the bra-state within states of the same F and symmetry.
+
+            f2 (float):
+                Quantum number of the total angular momentum F for the ket-state.
+
+            sym2 (str):
+                Symmetry label of the ket-state.
+
+            istate2 (int):
+                Index of the ket-state within states of the same F and symmetry.
+
+            alpha (np.ndarray):
+                1D array of alpha Euler angles in radians.
+
+            beta (np.ndarray):
+                1D array of beta Euler angles in radians.
+
+            gamma (np.ndarray):
+                1D array of gamma Euler angles in radians.
+
+            coef_thresh (float, optional):
+                Threshold for ignoring basis states with expansion coefficient magnitudes 
+                smaller than this value.
+                Default is 1e-8.
+
+        Returns:
+            np.ndarray:
+                3D array of shape (len(alpha), len(beta), len(gamma)) representing
+                the reduced rotational probability density for the specified states
+                on the Euler angle grid.
+        """
+        v1 = self.vec[f1][sym1][:, istate1]
+        ind1 = np.where(np.abs(v1) >= coef_thresh)[0]
+        qua1 = [
+            (j, spin, rot_sym, l)
+            for (j, spin, rot_sym, spin_sym, dim) in self.j_spin_list[f1][sym1]
+            for l in range(dim)
+        ]
+
+        v2 = self.vec[f2][sym2][:, istate2]
+        ind2 = np.where(np.abs(v2) >= coef_thresh)[0]
+        qua2 = [
+            (j, spin, rot_sym, l)
+            for (j, spin, rot_sym, spin_sym, dim) in self.j_spin_list[f2][sym2]
+            for l in range(dim)
+        ]
+        print(len(ind1), len(ind2))
+
+        dens = np.zeros(
+            (len(ind1), len(ind2), len(alpha), len(beta), len(gamma)),
+            dtype=np.complex128,
+        )
+        for i, i1 in enumerate(ind1):
+            j1, spin1, rot_sym1, l1 = qua1[i1]
+            for j, i2 in enumerate(ind2):
+                j2, spin2, rot_sym2, l2 = qua2[i2]
+                if spin1 != spin2:
+                    continue
+                dens[i, j] = rot_states.rot_dens(
+                    j1, rot_sym1, l1, j2, rot_sym2, l2, alpha, beta, gamma
+                )
+        dens = np.einsum("p,pq...,q->...", np.conj(v1[ind1]), dens, v2[ind2])
+        return dens
+
     def mat(self):
         e0 = []
         for f in self.f_list:
