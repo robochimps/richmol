@@ -4,7 +4,7 @@ from scipy import constants
 from scipy.sparse import block_array, csr_array, diags
 
 from .asymtop import RotStates, ENERGY_UNITS, Energy_units
-from .cartens import CartTensor, Rank2Tensor, MKTensor
+from .cartens import CartTensor, Rank1Tensor, Rank2Tensor, MKTensor
 from .constants import ENR_INVCM_MHZ
 from .nucspin import *
 
@@ -274,6 +274,8 @@ class HyperStates:
         # add dimensions and state assignment
 
         self.enr_units = states.enr_units
+        self.spin_op = spin_op
+        self._rot_states_id = states._id
 
         self.dim_m = {f: int(2 * f) + 1 for f in self.f_list}
         self.dim_k = {
@@ -366,12 +368,13 @@ class HyperStates:
         f2: float,
         sym2: str,
         istate2: int | tuple[float, int],
-        alpha: np.ndarray,
-        beta: np.ndarray,
-        gamma: np.ndarray,
+        spin_dens: bool = False,
+        alpha: np.ndarray = np.linspace(0, 2 * np.pi, 30),
+        beta: np.ndarray = np.linspace(0, np.pi, 30),
+        gamma: np.ndarray = np.linspace(0, 2 * np.pi, 30),
         coef_thresh: float = 1e-8,
     ) -> np.ndarray:
-        """Computes the reduced rotational probability density for two selected hyperfine
+        """Computes the reduced rotational probability (spin-)density for two selected hyperfine
         states as a function of Euler angles α, β, γ.
         The density is obtained by integrating over vibrational and nuclear spin coordinates,
         assuming an orthonormal vibrational basis.
@@ -388,11 +391,10 @@ class HyperStates:
                 Symmetry label of the bra-state.
 
             istate1 (int | tuple[float, int]):
-                Index specifying the bra-state for given F and symmetry. Can be either:
-                - An integer index across all hyperfine states including degeneracies,
-                i.e., including m_F ∈ [-F, F], or
-                - A tuple (m_F, i), where i refers to the hyperfine state index without
-                counting degenerate states.
+                Index specifying the bra hyperfine state for the given F and symmetry. Can be:
+                - An integer index over all states (including m_F=-F..F degeneracy), or
+                - A tuple (m_F, i), where m_F is the magnetic quantum number and i is the index
+                over internal hyperfine structure excluding degeneracy.
 
             f2 (float):
                 Quantum number of the total angular momentum F for the ket-state.
@@ -401,31 +403,43 @@ class HyperStates:
                 Symmetry label of the ket-state.
 
             istate2 (int | tuple[float, int]):
-                Index specifying the ket-state for given F and symmetry.
+                Index specifying the ket hyperfine state (same structure as `istate1`).
+
+            spin_dens (bool):
+                If True, compute the rotational spin-density instead of scalar probability
+                density. The result will include Cartesian spin components and nuclear operator
+                indices. Default is False.
 
             alpha (np.ndarray):
                 1D array of alpha Euler angles in radians.
+                Default is np.linspace(0, 2 * np.pi, 30).
 
             beta (np.ndarray):
                 1D array of beta Euler angles in radians.
+                Default is np.linspace(0, np.pi, 30).
 
             gamma (np.ndarray):
                 1D array of gamma Euler angles in radians.
+                Default is np.linspace(0, 2 * np.pi, 30).
 
             coef_thresh (float, optional):
-                Threshold for ignoring basis states with expansion coefficient magnitudes
-                smaller than this value.
+                Threshold for ignoring basis states with expansion coefficient
+                magnitudes smaller than this value.
                 Default is 1e-8.
 
         Returns:
             np.ndarray:
-                3D array of shape (len(alpha), len(beta), len(gamma)) representing
-                the reduced rotational probability density for the specified states
-                on the Euler angle grid.
+                - If `spin_dens` is False: a 3D array of shape
+                `(len(alpha), len(beta), len(gamma))` containing the scalar reduced
+                rotational probability density on the Euler angle grid.
+                - If `spin_dens` is True: a 5D array of shape
+                `(len(alpha), len(beta), len(gamma), 3, N)` where `3` corresponds
+                to Cartesian components of the spin-density vector, and
+                `N` is the number of nuclear spin operators included.
         """
 
         # Computes (-1)^(F+m_F) √{2F+1} ∑_{m_J} ⟨F I J; −m_F m_I m_J⟩ |J, m_J⟩ on Euler grid
-        def psi_three_j(f, mf, j, spin, rot_sym, rot_state_ind):
+        def _psi_three_j(f, mf, j, spin, rot_sym, rot_ind):
             p = f + mf
             ip = int(p)
             if abs(p - ip) > 1e-16:
@@ -455,22 +469,47 @@ class HyperStates:
             ).reshape(len(mi), len(mj))
 
             rot_kv, rot_m, rot_l, vib_ind = rot_states._rot_psi_grid(
-                j, rot_sym, alpha, beta, gamma, rot_state_ind
+                j, rot_sym, alpha, beta, gamma, rot_ind
             )
             rot_m = np.einsum("sm,mlg->slg", threej, rot_m, optimize="optimal") * prefac
             return rot_kv, rot_m, rot_l, vib_ind
 
+        if rot_states._id != self._rot_states_id:
+            raise ValueError(
+                "Mismatched rotational states: the provided `rot_states` object does not match "
+                "the one used to construct this hyperfine state instance."
+                "Ensure that you are using the same `RotStates` object."
+            )
+
         if isinstance(istate1, int):
             im1, ik1 = self.mk_ind[f1][sym1][istate1]
             m1 = np.linspace(-f1, f1, int(2 * f1) + 1)[im1]
-        else:
+        elif (
+            isinstance(istate1, tuple)
+            and len(istate1) == 2
+            and isinstance(istate1[0], float)
+            and isinstance(istate1[1], int)
+        ):
             m1, ik1 = istate1
+        else:
+            raise ValueError(
+                "Provided `istate1` is nether 'int' nor 'tuple[float, int]'"
+            )
 
         if isinstance(istate2, int):
             im2, ik2 = self.mk_ind[f2][sym2][istate2]
             m2 = np.linspace(-f2, f2, int(2 * f2) + 1)[im2]
-        else:
+        elif (
+            isinstance(istate2, tuple)
+            and len(istate2) == 2
+            and isinstance(istate2[0], float)
+            and isinstance(istate2[1], int)
+        ):
             m2, ik2 = istate2
+        else:
+            raise ValueError(
+                "Provided `istate2` is nether 'int' nor 'tuple[float, int]'"
+            )
 
         # precompute (-1)^(F+m_F) √{2F+1} ∑_{m_J} ⟨F I J; −m_F m_I m_J⟩ |J, m_J⟩ on Euler grid
         # for all primitive product states that contribute to the BRA hyperfine state
@@ -479,14 +518,14 @@ class HyperStates:
         v1 = self.vec[f1][sym1][:, ik1]
         ind1 = np.where(np.abs(v1) >= coef_thresh)[0]
         qua = [
-            (j, spin[-1], rot_sym, rot_state_ind)
+            (j, spin, rot_sym, rot_state_ind)
             for (j, spin, rot_sym, spin_sym, dim) in self.j_spin_list[f1][sym1]
             for rot_state_ind in range(dim)
         ]
         v1 = v1[ind1]
         qua1 = [qua[i] for i in ind1]
         psi1 = [
-            psi_three_j(f1, m1, j, spin, rot_sym, rot_state_ind)
+            _psi_three_j(f1, m1, j, spin[-1], rot_sym, rot_state_ind)
             for (j, spin, rot_sym, rot_state_ind) in qua1
         ]
 
@@ -497,23 +536,27 @@ class HyperStates:
         v2 = self.vec[f2][sym2][:, ik2]
         ind2 = np.where(np.abs(v2) >= coef_thresh)[0]
         qua = [
-            (j, spin[-1], rot_sym, rot_state_ind)
+            (j, spin, rot_sym, rot_state_ind)
             for (j, spin, rot_sym, spin_sym, dim) in self.j_spin_list[f2][sym2]
             for rot_state_ind in range(dim)
         ]
         v2 = v2[ind2]
         qua2 = [qua[i] for i in ind2]
         psi2 = [
-            psi_three_j(f2, m2, j, spin, rot_sym, rot_state_ind)
+            _psi_three_j(f2, m2, j, spin[-1], rot_sym, rot_state_ind)
             for (j, spin, rot_sym, rot_state_ind) in qua2
         ]
 
         # compute densities in the primitive product basis of rovibrational and spin functions
 
-        prim_dens = np.zeros(
-            (len(psi1), len(psi2), len(alpha), len(beta), len(gamma)),
-            dtype=np.complex128,
-        )
+        dens_shape = (len(psi1), len(psi2), len(alpha), len(beta), len(gamma))
+
+        if spin_dens:
+            # generate list of spin operators, required for computing <I',m_I'|I_n|I,m_I>
+            spin_op = [Spin(spin=op.spin) for op in self.spin_op]
+            dens_shape = dens_shape + (3, len(spin_op))
+
+        prim_dens = np.zeros(dens_shape, dtype=np.complex128)
 
         for i1, (rot_kv1, rot_m1, rot_l1, vib_ind1) in enumerate(psi1):
             j1, spin1, rot_sym1, rot_state_ind1 = qua1[i1]
@@ -521,8 +564,14 @@ class HyperStates:
             for i2, (rot_kv2, rot_m2, rot_l2, vib_ind2) in enumerate(psi2):
                 j2, spin2, rot_sym2, rot_state_ind2 = qua2[i2]
 
-                if spin1 != spin2:
-                    continue
+                if spin_dens:
+                    # compute <I',m_I'|I_n|I,m_I>
+                    spin_me = _spin_me(spin1, spin2, spin_op)  # (m_I', m_I, (x,y,z), n)
+                    if spin_me is None:
+                        continue
+                else:
+                    if spin1 != spin2:
+                        continue
 
                 vib_ind12 = list(set(vib_ind1) & set(vib_ind2))
                 vi1 = [vib_ind1.index(v) for v in vib_ind12]
@@ -542,14 +591,23 @@ class HyperStates:
                     rot_kv2[vi2],
                     optimize="optimal",
                 )
-                den_m = np.einsum(
-                    "mlg,mng->lng", np.conj(rot_m1), rot_m2, optimize="optimal"
-                )
+                if spin_dens:
+                    den_m = np.einsum(
+                        "mlg,mk...,kng->lng...",
+                        np.conj(rot_m1),
+                        spin_me,
+                        rot_m2,
+                        optimize="optimal",
+                    )
+                else:
+                    den_m = np.einsum(
+                        "mlg,mng->lng", np.conj(rot_m1), rot_m2, optimize="optimal"
+                    )
                 den_l = np.einsum(
                     "lg,ng->lng", np.conj(rot_l1), rot_l2, optimize="optimal"
                 )
                 prim_dens[i1, i2] = np.einsum(
-                    "lng,lna,lnb,b->abg",
+                    "lng,lna...,lnb,b->abg...",
                     den_kv,
                     den_m,
                     den_l,
@@ -558,11 +616,9 @@ class HyperStates:
                 )
 
         # transform density to hyperfine eigenbasis
-
         dens = np.einsum(
             "i,ij...,j->...", np.conj(v1), prim_dens, v2, optimize="optimal"
         )
-
         return dens
 
     def mat(self):
@@ -654,6 +710,76 @@ def _quadrupole_me(
 
     h = block_array(h)
     return h
+
+
+def _spin_me(spin1: tuple[float], spin2: tuple[float], spin_op: list[SpinOperator]):
+    """Computes matrix elements of nuclear spin operators ⟨I', m' | I_n | I, m⟩ between
+    coupled nuclear spin states.
+
+    Args:
+        spin1 (tuple[float]):
+            Coupled spin quantum numbers (I_1', I_{12}', ..., I_{1N}'=I')
+            describing the bra nuclear spin state.
+
+        spin2 (tuple[float]):
+            Coupled spin quantum numbers (I_1, I_{12}, ..., I_{1N}=I)
+            describing the ket nuclear spin state.
+
+        spin_op (list[SpinOperator]):
+            List of nuclear spin operators I_n, one for each nucleus
+            involved in the system.
+
+    Returns:
+        np.ndarray | None:
+            A 4D array of shape (2I'+1, 2I+1, 3, len(spin_op)) representing the matrix elements
+            ⟨I', m' | I_n | I, m⟩, where, the first two dimensions correspond to m'=-I'..I' and
+            m=-I..I, respectively, the third dimension corresponds to Cartesian components
+            of the spin operator (x, y, z), and the fourth dimension indexes the nuclei
+            (corresponding index in `spin_op` list).
+            Returns None if all matrix elements are zero.
+    """
+    # reduced matrix elements <I' || I(i) || I>
+    red_me = reduced_me([spin1], [spin2], spin_op)
+    if red_me:
+        rme = red_me[(spin1, spin2)]
+    else:
+        return
+
+    # spherical-to-Cartesian transformation for rank-1 tensor
+    tmat = Rank1Tensor().umat_spher_to_cart[1]
+
+    I1 = spin1[-1]
+    I2 = spin2[-1]
+    two_I1 = int(I1 * 2)
+    two_I2 = int(I2 * 2)
+
+    me = np.zeros(
+        (int(2 * I1) + 1, int(2 * I2) + 1, 3, len(spin_op)), dtype=np.complex128
+    )
+
+    for im1, m1 in enumerate(np.linspace(-I1, I1, int(2 * I1) + 1)):
+        two_m1 = int(m1 * 2)
+
+        for im2, m2 in enumerate(np.linspace(-I2, I2, int(2 * I2) + 1)):
+            two_m2 = int(m2 * 2)
+
+            p = I1 - m1
+            ip = int(p)
+            if abs(p - ip) > 1e-16:
+                raise ValueError(f"I1 - m1: {I1} - {m1} = {p} is not an integer number")
+
+            threej = py3nj.wigner3j(
+                [two_I1] * 3,
+                [2, 2, 2],
+                [two_I2] * 3,
+                [-two_m1] * 3,
+                [-2, 0, 2],
+                [two_m2] * 3,
+                ignore_invalid=True,
+            )
+            prefac = (-1) ** ip * np.dot(tmat, threej)
+            me[im1, im2] = prefac[:, None] * rme[None, :]
+    return me
 
 
 class HyperCartTensor(MKTensor):

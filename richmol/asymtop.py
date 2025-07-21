@@ -1,4 +1,5 @@
 import re
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Literal
@@ -72,6 +73,7 @@ class RotStates:
     quanta: np.ndarray = field(init=False)
 
     def __post_init__(self):
+        self._id = str(uuid.uuid4())
         self.dim_m = {j: 2 * j + 1 for j in self.j_list}
         self.dim_k = {
             j: {sym: len(self.enr[j][sym]) for sym in self.sym_list[j]}
@@ -998,7 +1000,9 @@ def inertia_tensor(masses, xyz):
     return imat
 
 
-def write_xyz(filename, atom_labels: list[str], atom_xyz: np.ndarray, comment: str = ""):
+def write_xyz(
+    filename, atom_labels: list[str], atom_xyz: np.ndarray, comment: str = ""
+):
     if len(atom_labels) != len(atom_xyz):
         raise ValueError("Length of 'atom_labels' and 'atom_xyz' must match.")
 
