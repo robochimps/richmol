@@ -362,10 +362,10 @@ class HyperStates:
         rot_states: RotStates,
         f1: float,
         sym1: str,
-        istate1: int,
+        istate1: int | tuple[float, int],
         f2: float,
         sym2: str,
-        istate2: int,
+        istate2: int | tuple[float, int],
         alpha: np.ndarray,
         beta: np.ndarray,
         gamma: np.ndarray,
@@ -387,8 +387,12 @@ class HyperStates:
             sym1 (str):
                 Symmetry label of the bra-state.
 
-            istate1 (int):
-                Index of the bra-state within states of the same F and symmetry.
+            istate1 (int | tuple[float, int]):
+                Index specifying the bra-state for given F and symmetry. Can be either:
+                - An integer index across all hyperfine states including degeneracies,
+                i.e., including m_F ∈ [-F, F], or
+                - A tuple (m_F, i), where i refers to the hyperfine state index without
+                counting degenerate states.
 
             f2 (float):
                 Quantum number of the total angular momentum F for the ket-state.
@@ -396,8 +400,8 @@ class HyperStates:
             sym2 (str):
                 Symmetry label of the ket-state.
 
-            istate2 (int):
-                Index of the ket-state within states of the same F and symmetry.
+            istate2 (int | tuple[float, int]):
+                Index specifying the ket-state for given F and symmetry.
 
             alpha (np.ndarray):
                 1D array of alpha Euler angles in radians.
@@ -409,7 +413,7 @@ class HyperStates:
                 1D array of gamma Euler angles in radians.
 
             coef_thresh (float, optional):
-                Threshold for ignoring basis states with expansion coefficient magnitudes 
+                Threshold for ignoring basis states with expansion coefficient magnitudes
                 smaller than this value.
                 Default is 1e-8.
 
@@ -419,37 +423,146 @@ class HyperStates:
                 the reduced rotational probability density for the specified states
                 on the Euler angle grid.
         """
-        v1 = self.vec[f1][sym1][:, istate1]
+
+        # Computes (-1)^(F+m_F) √{2F+1} ∑_{m_J} ⟨F I J; −m_F m_I m_J⟩ |J, m_J⟩ on Euler grid
+        def psi_three_j(f, mf, j, spin, rot_sym, rot_state_ind):
+            p = f + mf
+            ip = int(p)
+            if abs(p - ip) > 1e-16:
+                raise ValueError(f"F + m_F: {f} + {mf} = {p} is not an integer number")
+            prefac = (-1) ** p * np.sqrt(2 * f + 1)
+
+            mi = np.linspace(-spin, spin, int(2 * spin) + 1)
+            mj = np.arange(-j, j + 1)
+            mij = np.concatenate(
+                (
+                    mi[:, None, None].repeat(len(mj), axis=1),
+                    mj[None, :, None].repeat(len(mi), axis=0),
+                ),
+                axis=-1,
+            ).reshape(-1, 2)
+            n = len(mij)
+            two_mi, two_mj = mij.T * 2
+
+            threej = py3nj.wigner3j(
+                [int(f * 2)] * n,
+                [int(spin * 2)] * n,
+                [j * 2] * n,
+                [-int(mf * 2)] * n,
+                two_mi.astype(int),
+                two_mj.astype(int),
+                ignore_invalid=True,
+            ).reshape(len(mi), len(mj))
+
+            rot_kv, rot_m, rot_l, vib_ind = rot_states._rot_psi_grid(
+                j, rot_sym, alpha, beta, gamma, rot_state_ind
+            )
+            rot_m = np.einsum("sm,mlg->slg", threej, rot_m, optimize="optimal") * prefac
+            return rot_kv, rot_m, rot_l, vib_ind
+
+        if isinstance(istate1, int):
+            im1, ik1 = self.mk_ind[f1][sym1][istate1]
+            m1 = np.linspace(-f1, f1, int(2 * f1) + 1)[im1]
+        else:
+            m1, ik1 = istate1
+
+        if isinstance(istate2, int):
+            im2, ik2 = self.mk_ind[f2][sym2][istate2]
+            m2 = np.linspace(-f2, f2, int(2 * f2) + 1)[im2]
+        else:
+            m2, ik2 = istate2
+
+        # precompute (-1)^(F+m_F) √{2F+1} ∑_{m_J} ⟨F I J; −m_F m_I m_J⟩ |J, m_J⟩ on Euler grid
+        # for all primitive product states that contribute to the BRA hyperfine state
+        # with the corresponding coefficient greater than `coef_thresh`
+
+        v1 = self.vec[f1][sym1][:, ik1]
         ind1 = np.where(np.abs(v1) >= coef_thresh)[0]
-        qua1 = [
-            (j, spin, rot_sym, l)
+        qua = [
+            (j, spin[-1], rot_sym, rot_state_ind)
             for (j, spin, rot_sym, spin_sym, dim) in self.j_spin_list[f1][sym1]
-            for l in range(dim)
+            for rot_state_ind in range(dim)
+        ]
+        v1 = v1[ind1]
+        qua1 = [qua[i] for i in ind1]
+        psi1 = [
+            psi_three_j(f1, m1, j, spin, rot_sym, rot_state_ind)
+            for (j, spin, rot_sym, rot_state_ind) in qua1
         ]
 
-        v2 = self.vec[f2][sym2][:, istate2]
+        # precompute (-1)^(F+m_F) √{2F+1} ∑_{m_J} ⟨F I J; −m_F m_I m_J⟩ |J, m_J⟩ on Euler grid
+        # for all primitive product states that contribute to the KET hyperfine state
+        # with the corresponding coefficient greater than `coef_thresh`
+
+        v2 = self.vec[f2][sym2][:, ik2]
         ind2 = np.where(np.abs(v2) >= coef_thresh)[0]
-        qua2 = [
-            (j, spin, rot_sym, l)
+        qua = [
+            (j, spin[-1], rot_sym, rot_state_ind)
             for (j, spin, rot_sym, spin_sym, dim) in self.j_spin_list[f2][sym2]
-            for l in range(dim)
+            for rot_state_ind in range(dim)
         ]
-        print(len(ind1), len(ind2))
+        v2 = v2[ind2]
+        qua2 = [qua[i] for i in ind2]
+        psi2 = [
+            psi_three_j(f2, m2, j, spin, rot_sym, rot_state_ind)
+            for (j, spin, rot_sym, rot_state_ind) in qua2
+        ]
 
-        dens = np.zeros(
-            (len(ind1), len(ind2), len(alpha), len(beta), len(gamma)),
+        # compute densities in the primitive product basis of rovibrational and spin functions
+
+        prim_dens = np.zeros(
+            (len(psi1), len(psi2), len(alpha), len(beta), len(gamma)),
             dtype=np.complex128,
         )
-        for i, i1 in enumerate(ind1):
-            j1, spin1, rot_sym1, l1 = qua1[i1]
-            for j, i2 in enumerate(ind2):
-                j2, spin2, rot_sym2, l2 = qua2[i2]
+
+        for i1, (rot_kv1, rot_m1, rot_l1, vib_ind1) in enumerate(psi1):
+            j1, spin1, rot_sym1, rot_state_ind1 = qua1[i1]
+
+            for i2, (rot_kv2, rot_m2, rot_l2, vib_ind2) in enumerate(psi2):
+                j2, spin2, rot_sym2, rot_state_ind2 = qua2[i2]
+
                 if spin1 != spin2:
                     continue
-                dens[i, j] = rot_states.rot_dens(
-                    j1, rot_sym1, l1, j2, rot_sym2, l2, alpha, beta, gamma
+
+                vib_ind12 = list(set(vib_ind1) & set(vib_ind2))
+                vi1 = [vib_ind1.index(v) for v in vib_ind12]
+                vi2 = [vib_ind2.index(v) for v in vib_ind12]
+                diff = list(set(vib_ind1) - set(vib_ind2))
+                assert len(diff) == 0, (
+                    f"States (j1, sym1, istate1) = {(j1, rot_sym1, rot_state_ind1)} "
+                    + f"and (j2, sym2, istate2) = {(j2, rot_sym2, rot_state_ind2)}\n"
+                    + f"have non-overlapping sets of unique vibrational quanta: "
+                    + "{list(set(vib_ind1))} != {list(set(vib_ind2))},\n"
+                    + f"difference: {diff}"
                 )
-        dens = np.einsum("p,pq...,q->...", np.conj(v1[ind1]), dens, v2[ind2])
+
+                den_kv = np.einsum(
+                    "vlg,vng->lng",
+                    np.conj(rot_kv1[vi1]),
+                    rot_kv2[vi2],
+                    optimize="optimal",
+                )
+                den_m = np.einsum(
+                    "mlg,mng->lng", np.conj(rot_m1), rot_m2, optimize="optimal"
+                )
+                den_l = np.einsum(
+                    "lg,ng->lng", np.conj(rot_l1), rot_l2, optimize="optimal"
+                )
+                prim_dens[i1, i2] = np.einsum(
+                    "lng,lna,lnb,b->abg",
+                    den_kv,
+                    den_m,
+                    den_l,
+                    np.sin(beta),
+                    optimize="optimal",
+                )
+
+        # transform density to hyperfine eigenbasis
+
+        dens = np.einsum(
+            "i,ij...,j->...", np.conj(v1), prim_dens, v2, optimize="optimal"
+        )
+
         return dens
 
     def mat(self):
