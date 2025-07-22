@@ -102,6 +102,8 @@ class HyperStates:
     enr: dict[float, dict[str, np.ndarray]]
     vec: dict[float, dict[str, np.ndarray]]
     enr_units: Energy_units
+    spin_op: list[SpinOperator]
+    _rot_states_id: str
 
     dim_k: dict[float, dict[str, int]]  # dim_k[f][sym]
     dim_m: dict[float, int]  # dim_m[f]
@@ -518,15 +520,15 @@ class HyperStates:
         v1 = self.vec[f1][sym1][:, ik1]
         ind1 = np.where(np.abs(v1) >= coef_thresh)[0]
         qua = [
-            (j, spin, rot_sym, rot_state_ind)
+            (j, spin, rot_sym, rot_ind)
             for (j, spin, rot_sym, spin_sym, dim) in self.j_spin_list[f1][sym1]
-            for rot_state_ind in range(dim)
+            for rot_ind in range(dim)
         ]
         v1 = v1[ind1]
         qua1 = [qua[i] for i in ind1]
         psi1 = [
-            _psi_three_j(f1, m1, j, spin[-1], rot_sym, rot_state_ind)
-            for (j, spin, rot_sym, rot_state_ind) in qua1
+            _psi_three_j(f1, m1, j, spin[-1], rot_sym, rot_ind)
+            for (j, spin, rot_sym, rot_ind) in qua1
         ]
 
         # precompute (-1)^(F+m_F) √{2F+1} ∑_{m_J} ⟨F I J; −m_F m_I m_J⟩ |J, m_J⟩ on Euler grid
@@ -536,15 +538,15 @@ class HyperStates:
         v2 = self.vec[f2][sym2][:, ik2]
         ind2 = np.where(np.abs(v2) >= coef_thresh)[0]
         qua = [
-            (j, spin, rot_sym, rot_state_ind)
+            (j, spin, rot_sym, rot_ind)
             for (j, spin, rot_sym, spin_sym, dim) in self.j_spin_list[f2][sym2]
-            for rot_state_ind in range(dim)
+            for rot_ind in range(dim)
         ]
         v2 = v2[ind2]
         qua2 = [qua[i] for i in ind2]
         psi2 = [
-            _psi_three_j(f2, m2, j, spin[-1], rot_sym, rot_state_ind)
-            for (j, spin, rot_sym, rot_state_ind) in qua2
+            _psi_three_j(f2, m2, j, spin[-1], rot_sym, rot_ind)
+            for (j, spin, rot_sym, rot_ind) in qua2
         ]
 
         # compute densities in the primitive product basis of rovibrational and spin functions
@@ -559,14 +561,14 @@ class HyperStates:
         prim_dens = np.zeros(dens_shape, dtype=np.complex128)
 
         for i1, (rot_kv1, rot_m1, rot_l1, vib_ind1) in enumerate(psi1):
-            j1, spin1, rot_sym1, rot_state_ind1 = qua1[i1]
+            j1, spin1, rot_sym1, rot_ind1 = qua1[i1]
 
             for i2, (rot_kv2, rot_m2, rot_l2, vib_ind2) in enumerate(psi2):
-                j2, spin2, rot_sym2, rot_state_ind2 = qua2[i2]
+                j2, spin2, rot_sym2, rot_ind2 = qua2[i2]
 
                 if spin_dens:
-                    # compute <I',m_I'|I_n|I,m_I>
-                    spin_me = _spin_me(spin1, spin2, spin_op)  # (m_I', m_I, (x,y,z), n)
+                    # compute <I',m_I'|I_n|I,m_I>, spin_me.shape = (m_I', m_I, (x,y,z), n)
+                    spin_me = _spin_me(spin1, spin2, spin_op)
                     if spin_me is None:
                         continue
                 else:
@@ -578,8 +580,8 @@ class HyperStates:
                 vi2 = [vib_ind2.index(v) for v in vib_ind12]
                 diff = list(set(vib_ind1) - set(vib_ind2))
                 assert len(diff) == 0, (
-                    f"States (j1, sym1, istate1) = {(j1, rot_sym1, rot_state_ind1)} "
-                    + f"and (j2, sym2, istate2) = {(j2, rot_sym2, rot_state_ind2)}\n"
+                    f"States (j1, sym1, istate1) = {(j1, rot_sym1, rot_ind1)} "
+                    + f"and (j2, sym2, istate2) = {(j2, rot_sym2, rot_ind2)}\n"
                     + f"have non-overlapping sets of unique vibrational quanta: "
                     + "{list(set(vib_ind1))} != {list(set(vib_ind2))},\n"
                     + f"difference: {diff}"
@@ -712,17 +714,19 @@ def _quadrupole_me(
     return h
 
 
-def _spin_me(spin1: tuple[float], spin2: tuple[float], spin_op: list[SpinOperator]):
+def _spin_me(
+    spin1: tuple[float], spin2: tuple[float], spin_op: list[SpinOperator]
+) -> np.ndarray | None:
     """Computes matrix elements of nuclear spin operators ⟨I', m' | I_n | I, m⟩ between
     coupled nuclear spin states.
 
     Args:
         spin1 (tuple[float]):
-            Coupled spin quantum numbers (I_1', I_{12}', ..., I_{1N}'=I')
+            A tuple of coupled spin quantum numbers (I_1', I_{12}', ..., I_{1N}'=I')
             describing the bra nuclear spin state.
 
         spin2 (tuple[float]):
-            Coupled spin quantum numbers (I_1, I_{12}, ..., I_{1N}=I)
+            A tuple of coupled spin quantum numbers (I_1, I_{12}, ..., I_{1N}=I)
             describing the ket nuclear spin state.
 
         spin_op (list[SpinOperator]):

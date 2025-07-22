@@ -56,6 +56,7 @@ class RotStates:
     jktau_list: dict[int, list[tuple[int, int, int, str]]]
     enr_units: Energy_units
 
+    _id: str = field(init=False)
     dim_k: dict[int, dict[str, int]] = field(init=False)
     dim_m: dict[int, int] = field(init=False)
     mk_ind: dict[int, dict[str, list[tuple[int, int]]]] = field(init=False)
