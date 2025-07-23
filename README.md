@@ -7,14 +7,15 @@ Features are added based on project requirements and community interest.
 
 ## Features
 Richmol currently supports:
-- Rigid rotor dynamics in external fields, including dipole and polarizability interactions.
+- Rigid rotor dynamics in external fields, including dipole, polarizability, and hyperpolarizability interactions.
+- Watson-type effective Hamiltonians (up to 6th-order).
 - Absorption spectra involving dipole and quadrupole transitions, Raman transitions.
 - Nuclear-spin hyperfine effects, with current support for quadrupole interactions.
 
 The following capabilities are straightforward to add, depending on research needs and community contributions:
-- Rotational dynamics using Watson-type effective Hamiltonians.
+- Higher-order terms in Watson-type effective Hamiltonians.
 - Vibrational effects using external matrix elements from programs like [TROVE](https://github.com/Trovemaster/TROVE) or [vibrojet](https://github.com/robochimps/vibrojet).
-- Higher-order molecule-field interaction tensors, such as hyperpolarizability.
+- Higher-order molecule-field interaction tensors, such as 2nd hyperpolarizability or interaction potentials expressed in terms of the Wigner $D$-matrices
 - Spin-rotation and spin-spin hyperfine interactions.
 
 ## Installation
