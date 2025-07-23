@@ -7,7 +7,7 @@ name = "richmol"
 version = "0.1.0"
 description = "Molecular rotations and vibrations in fields"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.12"
 license = { file = "LICENSE" }
 authors = [{ name = "Robochimps", email = "andrey.yachmenev@robochimps.com" }]
 dependencies = [
