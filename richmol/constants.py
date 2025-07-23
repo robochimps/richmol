@@ -69,6 +69,14 @@ POL_X_FIELD2_JOULE = Constant(
     doc="To convert from Polarizability[a.u.] * Field^2[a.u.^2] to (Polarizability * Field^2)[Joule]",
 )
 
+HYPERPOL_X_FIELD3_JOULE = Constant(
+    val=constants.value("atomic unit of electric field")
+    * constants.value("atomic unit of electric field")
+    * constants.value("atomic unit of electric field")
+    * constants.value("atomic unit of 1st hyperpolarizability"),
+    doc="To convert from Hyperpolarizability[a.u.] * Field^3[a.u.^3] to (Hyperpolarizability * Field^3)[Joule]",
+)
+
 ENR_INVCM_JOULE = Constant(
     val=constants.value("Planck constant")
     * constants.value("speed of light in vacuum")
@@ -89,4 +97,9 @@ DIP_X_FIELD_INVCM = Constant(
 POL_X_FIELD2_INVCM = Constant(
     val=POL_X_FIELD2_JOULE / ENR_INVCM_JOULE,
     doc="To convert from Polarizability[a.u.] * Field^2[a.u.^2] to (Polarizability * Field^2)[cm^-1]",
+)
+
+HYPERPOL_X_FIELD3_INVCM = Constant(
+    val=HYPERPOL_X_FIELD3_JOULE / ENR_INVCM_JOULE,
+    doc="To convert from Hyperpolarizability[a.u.] * Field^3[a.u.^3] to (Hyperpolarizability * Field^3)[cm^-1]",
 )
