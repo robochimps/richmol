@@ -383,8 +383,8 @@ if __name__ == "__main__":
 
     # example of reduced matrix elements for two spins 1/2
 
-    op1 = Spin(spin=1 / 2)
-    op2 = Spin(spin=1 / 2)
+    op1 = Spin(spin=3 / 2)
+    op2 = Spin(spin=3 / 2)
 
     I_list = near_equal_coupling([op1, op2])
 
