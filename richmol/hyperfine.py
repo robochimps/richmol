@@ -935,6 +935,8 @@ class HyperCartTensor(MKTensor):
 
 
 class Spin1Tensor(MKTensor):
+    # TODO!: Implement Spin1Tensor to represent matrix elements
+    # TODO!:    of a single spin operator on a specific nucleus
     def __init__(self, states: HyperStates, thresh: float = 1e-12):
         for f in fields(Rank1Tensor):
             setattr(self, f.name, getattr(Rank1Tensor, f.name))
@@ -1056,6 +1058,8 @@ class Spin1Tensor(MKTensor):
                     ignore_invalid=True,
                 )
 
+                # TODO!: add diagonal part in rovibrational basis (j_dim1, j_dim2)
+                rovib_me = diags([1.0] * j_dim1, offsets=0, format="csr")
                 me = spin_me[(spin1, spin2)] * prefac  # (no_spins,)
 
                 k_me_.append(me)
