@@ -1,10 +1,12 @@
+from dataclasses import fields
+
 import numpy as np
 import py3nj
 from scipy import constants
 from scipy.sparse import block_array, csr_array, diags
 
-from .asymtop import RotStates, ENERGY_UNITS, Energy_units
-from .cartens import CartTensor, Rank1Tensor, Rank2Tensor, MKTensor
+from .asymtop import ENERGY_UNITS, Energy_units, RotStates
+from .cartens import CartTensor, MKTensor, Rank1Tensor, Rank2Tensor
 from .constants import ENR_INVCM_MHZ
 from .nucspin import *
 
@@ -929,4 +931,98 @@ class HyperCartTensor(MKTensor):
 
         k_me = block_array(k_me)
 
+        return k_me
+
+
+class Spin1Tensor(MKTensor):
+    def __init__(self, states: HyperStates):
+        for f in fields(Rank1Tensor):
+            setattr(self, f.name, getattr(Rank1Tensor, f.name))
+        self.spin_op = [Spin(spin=op.spin) for op in states.spin_op]
+
+    def _k_tens(self, states, thresh: float):
+        omega_list = list(self.umat_cart_to_spher.keys())
+
+        k_me = {}
+        for f1 in states.f_list:
+            for f2 in states.f_list:
+
+                k_me_sym = {}
+                for sym1 in states.f_sym_list[f1]:
+                    for sym2 in states.f_sym_list[f2]:
+                        v1 = states.vec[f1][sym1]
+                        v2 = states.vec[f2][sym2]
+
+                        k_me_omega = {}
+                        for omega in omega_list:
+                            me = self._k_me_omega(
+                                f1, f2, sym1, sym2, states.j_spin_list, omega
+                            ).toarray()
+
+                            if np.any(np.abs(me) > thresh):
+                                me = np.einsum(
+                                    "ik,ij...,jl->kl",
+                                    np.conj(v1),
+                                    me,
+                                    v2,
+                                    optimize="optimal",
+                                )
+
+                                me[np.abs(me) < thresh] = 0
+                                me = csr_array(me)
+                                if me.nnz > 0:
+                                    k_me_omega[omega] = me
+
+                        if k_me_omega:
+                            k_me_sym[(sym1, sym2)] = k_me_omega
+
+                if k_me_sym:
+                    k_me[(f1, f2)] = k_me_sym
+
+        return k_me
+
+    def _k_me_omega(self, f1, f2, sym1, sym2, j_spin_list, omega):
+
+        spin1 = [spin for j, spin, j_sym, spin_sym, j_dim in j_spin_list[f1][sym1]]
+        spin2 = [spin for j, spin, j_sym, spin_sym, j_dim in j_spin_list[f2][sym2]]
+        if omega == 1:
+            spin_me = reduced_me(spin1, spin2, self.spin_op)
+        else:
+            raise ValueError(
+                f"Unknown value of omega = {omega} (only omega = 1 is currently supported)"
+            )
+
+        no_spins = len(self.spin_op)
+
+        k_me = []
+        for j1, spin1, j_sym1, spin_sym1, j_dim1 in j_spin_list[f1][sym1]:
+            k_me_ = []
+            for j2, spin2, j_sym2, spin_sym2, j_dim2 in j_spin_list[f2][sym2]:
+
+                if (j1 != j2) or ((spin1, spin2) not in spin_me):
+                    k_me_.append(csr_array(np.zeros((j_dim1, j_dim2, no_spins))))
+                    continue
+
+                fac = j2 + spin2[-1] + f1 + omega
+                if not float(fac).is_integer():
+                    raise ValueError(f"Non-integer power in (-1)**f: (-1)**{fac}")
+                fac = int(fac)
+
+                prefac = (-1) ** fac * py3nj.wigner6j(
+                    int(spin1[-1] * 2),
+                    int(f1 * 2),
+                    j2 * 2,
+                    int(f2 * 2),
+                    int(spin2[-1] * 2),
+                    int(omega * 2),
+                    ignore_invalid=True,
+                )
+
+                me = spin_me[(spin1, spin2)] * prefac  # (no_spins,)
+
+                k_me_.append(me)
+
+            k_me.append(k_me_)
+
+        k_me = block_array(k_me)
         return k_me
