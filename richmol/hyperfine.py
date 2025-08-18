@@ -935,10 +935,19 @@ class HyperCartTensor(MKTensor):
 
 
 class Spin1Tensor(MKTensor):
-    def __init__(self, states: HyperStates):
+    def __init__(self, states: HyperStates, thresh: float = 1e-12):
         for f in fields(Rank1Tensor):
             setattr(self, f.name, getattr(Rank1Tensor, f.name))
         self.spin_op = [Spin(spin=op.spin) for op in states.spin_op]
+        self.kmat = self._k_tens(states, thresh)
+        self.mmat = self._m_tens(states, thresh)
+        self.j_list = states.f_list
+        self.sym_list = states.f_sym_list
+        self.dim_m = {f: int(2 * f) + 1 for f in self.j_list}
+        self.dim_k = {
+            f: {sym: len(states.enr[f][sym]) for sym in self.sym_list[f]}
+            for f in self.j_list
+        }
 
     def _k_tens(self, states, thresh: float):
         omega_list = list(self.umat_cart_to_spher.keys())
@@ -980,6 +989,35 @@ class Spin1Tensor(MKTensor):
                     k_me[(f1, f2)] = k_me_sym
 
         return k_me
+
+    def _m_tens(self, states, thresh: float):
+        m_me = {}
+        for f1 in states.f_list:
+            for f2 in states.f_list:
+                m_list1, m_list2, threej_u = self._threej_umat_spher_to_cart(
+                    f1, f2, hyperfine=True
+                )
+                fac = np.sqrt((2 * f1 + 1) * (2 * f2 + 1))
+
+                me_cart = {}
+                for icart, cart in enumerate(self.cart_ind):
+
+                    me_o = {}
+                    for omega in threej_u.keys():
+                        me = threej_u[omega][:, :, icart] * fac
+                        me[np.abs(me) < thresh] = 0
+                        me = csr_array(me)
+
+                        if me.nnz > 0:
+                            me_o[omega] = me
+
+                    if me_o:
+                        me_cart[cart] = me_o
+
+                if me_cart:
+                    m_me[(f1, f2)] = me_cart
+
+        return m_me
 
     def _k_me_omega(self, f1, f2, sym1, sym2, j_spin_list, omega):
 
