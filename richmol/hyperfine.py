@@ -935,12 +935,27 @@ class HyperCartTensor(MKTensor):
 
 
 class Spin1Tensor(MKTensor):
-    # TODO!: Implement Spin1Tensor to represent matrix elements
-    # TODO!:    of a single spin operator on a specific nucleus
-    def __init__(self, states: HyperStates, thresh: float = 1e-12):
-        for f in fields(Rank1Tensor):
-            setattr(self, f.name, getattr(Rank1Tensor, f.name))
+    def __init__(self, spin_ind: int, states: HyperStates, thresh: float = 1e-12):
+        tens = Rank1Tensor()
+        for f in fields(tens):
+            setattr(self, f.name, getattr(tens, f.name))
+
+        if spin_ind > len(states.spin_op) - 1:
+            raise ValueError(
+                f"Input spin-operator index 'spin_ind' = {spin_ind} is larger than the total "
+                + f"number of spin operators = {len(states.spin_op)} in 'states' (HyperStates) "
+            )
+        if spin_ind < 0:
+            raise ValueError(
+                f"Illegal value of spin-operator index 'spin_ind' = {spin_ind} < 0"
+            )
+
+        self.spin_ind = spin_ind
+        # must keep all coupled spin operators, not just the current one,
+        # which is required for correct evaluation of the reduced matrix
+        # elements nucspin.reduced_me
         self.spin_op = [Spin(spin=op.spin) for op in states.spin_op]
+
         self.kmat = self._k_tens(states, thresh)
         self.mmat = self._m_tens(states, thresh)
         self.j_list = states.f_list
@@ -972,7 +987,7 @@ class Spin1Tensor(MKTensor):
 
                             if np.any(np.abs(me) > thresh):
                                 me = np.einsum(
-                                    "ik,ij...,jl->kl",
+                                    "ik,ij,jl->kl",
                                     np.conj(v1),
                                     me,
                                     v2,
@@ -1029,7 +1044,7 @@ class Spin1Tensor(MKTensor):
             spin_me = reduced_me(spin1, spin2, self.spin_op)
         else:
             raise ValueError(
-                f"Unknown value of omega = {omega} (only omega = 1 is currently supported)"
+                f"Unknown value of omega = {omega} (only operator <I_i> is currently implemented, i.e., omega = 1)"
             )
 
         no_spins = len(self.spin_op)
@@ -1040,7 +1055,7 @@ class Spin1Tensor(MKTensor):
             for j2, spin2, j_sym2, spin_sym2, j_dim2 in j_spin_list[f2][sym2]:
 
                 if (j1 != j2) or ((spin1, spin2) not in spin_me):
-                    k_me_.append(csr_array(np.zeros((j_dim1, j_dim2, no_spins))))
+                    k_me_.append(csr_array(np.zeros((j_dim1, j_dim2))))
                     continue
 
                 fac = j2 + spin2[-1] + f1 + omega
@@ -1058,9 +1073,11 @@ class Spin1Tensor(MKTensor):
                     ignore_invalid=True,
                 )
 
-                # TODO!: add diagonal part in rovibrational basis (j_dim1, j_dim2)
-                rovib_me = diags([1.0] * j_dim1, offsets=0, format="csr")
-                me = spin_me[(spin1, spin2)] * prefac  # (no_spins,)
+                me = (
+                    diags([1.0] * j_dim1, offsets=0, format="csr")
+                    * spin_me[(spin1, spin2)][self.spin_ind]
+                    * prefac
+                )
 
                 k_me_.append(me)
 
