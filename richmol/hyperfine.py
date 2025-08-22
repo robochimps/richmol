@@ -1047,14 +1047,12 @@ class Spin1Tensor(MKTensor):
                 f"Unknown value of omega = {omega} (only operator <I_i> is currently implemented, i.e., omega = 1)"
             )
 
-        no_spins = len(self.spin_op)
-
         k_me = []
         for j1, spin1, j_sym1, spin_sym1, j_dim1 in j_spin_list[f1][sym1]:
             k_me_ = []
             for j2, spin2, j_sym2, spin_sym2, j_dim2 in j_spin_list[f2][sym2]:
 
-                if (j1 != j2) or ((spin1, spin2) not in spin_me):
+                if (j1 != j2) or (j_sym1 != j_sym2) or ((spin1, spin2) not in spin_me):
                     k_me_.append(csr_array(np.zeros((j_dim1, j_dim2))))
                     continue
 
