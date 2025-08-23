@@ -969,6 +969,19 @@ class Spin1Tensor(MKTensor):
     def _k_tens(self, states, thresh: float):
         omega_list = list(self.umat_cart_to_spher.keys())
 
+        # precompute spin matrix elements
+        list_spin_states = list(
+            set(
+                [
+                    spin
+                    for f in states.f_list
+                    for sym in states.f_sym_list[f]
+                    for j, spin, *_ in states.j_spin_list[f][sym]
+                ]
+            )
+        )
+        spin_rme = reduced_me(list_spin_states, list_spin_states, self.spin_op)
+
         k_me = {}
         for f1 in states.f_list:
             for f2 in states.f_list:
@@ -982,7 +995,7 @@ class Spin1Tensor(MKTensor):
                         k_me_omega = {}
                         for omega in omega_list:
                             me = self._k_me_omega(
-                                f1, f2, sym1, sym2, states.j_spin_list, omega
+                                f1, f2, sym1, sym2, states.j_spin_list, omega, spin_rme
                             ).toarray()
 
                             if np.any(np.abs(me) > thresh):
@@ -1036,13 +1049,9 @@ class Spin1Tensor(MKTensor):
 
         return m_me
 
-    def _k_me_omega(self, f1, f2, sym1, sym2, j_spin_list, omega):
+    def _k_me_omega(self, f1, f2, sym1, sym2, j_spin_list, omega, spin_rme):
 
-        spin1 = [spin for j, spin, j_sym, spin_sym, j_dim in j_spin_list[f1][sym1]]
-        spin2 = [spin for j, spin, j_sym, spin_sym, j_dim in j_spin_list[f2][sym2]]
-        if omega == 1:
-            spin_me = reduced_me(spin1, spin2, self.spin_op)
-        else:
+        if omega != 1:
             raise ValueError(
                 f"Unknown value of omega = {omega} (only operator <I_i> is currently implemented, i.e., omega = 1)"
             )
@@ -1052,7 +1061,7 @@ class Spin1Tensor(MKTensor):
             k_me_ = []
             for j2, spin2, j_sym2, spin_sym2, j_dim2 in j_spin_list[f2][sym2]:
 
-                if (j1 != j2) or (j_sym1 != j_sym2) or ((spin1, spin2) not in spin_me):
+                if j1 != j2 or j_sym1 != j_sym2 or (spin1, spin2) not in spin_rme:
                     k_me_.append(csr_array(np.zeros((j_dim1, j_dim2))))
                     continue
 
@@ -1073,7 +1082,7 @@ class Spin1Tensor(MKTensor):
 
                 me = (
                     diags([1.0] * j_dim1, offsets=0, format="csr")
-                    * spin_me[(spin1, spin2)][self.spin_ind]
+                    * spin_rme[(spin1, spin2)][self.spin_ind]
                     * prefac
                 )
 
