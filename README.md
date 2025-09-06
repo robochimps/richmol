@@ -33,6 +33,21 @@ Several examples can be found in the [examples](examples) folder.
 
 Documentation is a work in progress ...
 
+## Citation
+
+If you use this code in your research, please cite:
+> A. Yachmenev, "Richmol: Python package for variational simulations of molecular nuclear motion dynamics in fields (2025)", available at: https://github.com/robochimps/richmol
+
+```bibtex
+@misc{Richmol,
+  author = {Andrey Yachmenev},
+  title  = {{Richmol}: {P}ython package for variational simulations of molecular nuclear motion dynamics in fields},
+  year   = {2025},
+  url    = {https://github.com/robochimps/richmol},
+  note   = {available at: \url{https://github.com/robochimps/richmol}}
+}
+```
+
 ## Questions and contact
 
 If you have questions regarding existing functionality or future requests, please open an issue or reach out to the authors directly at andrey.yachmenev@robochimps.com
