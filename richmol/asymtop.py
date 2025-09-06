@@ -459,11 +459,15 @@ class RotStates:
             enr_units,
         )
 
-    def mat(self):
+    def mat(self, m_list: list[int] | None = None):
         e0 = []
         for j in self.j_list:
             for sym in self.sym_list[j]:
-                for m in range(-j, j + 1):
+                if m_list is None:
+                    m_list_j = list(range(-j, j + 1))
+                else:
+                    m_list_j = [m for m in m_list if abs(m) <= j]
+                for m in m_list_j:
                     e0.append(self.enr[j][sym])
         return csr_array(diags(np.concatenate(e0)))
 
