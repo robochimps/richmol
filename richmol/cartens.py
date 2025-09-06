@@ -788,7 +788,7 @@ class MKTensor:
             if me_sym:
                 me_j[(j1, j2)] = me_sym
 
-        mat = self._dict_to_mat(me_j)
+        mat = self._dict_to_mat(me_j, m_list=m_list)
         return mat
 
     def mat_field(
@@ -838,7 +838,7 @@ class MKTensor:
             if me_sym:
                 me_j[(j1, j2)] = me_sym
 
-        mat = self._dict_to_mat(me_j)
+        mat = self._dict_to_mat(me_j, m_list=m_list)
         return mat
 
     def mat_trace(
