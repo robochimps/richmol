@@ -928,6 +928,11 @@ class RotStates:
             j, alpha, beta, gamma, self.linear
         )
 
+        # select m quanta
+        ind_m = {m: i for i, m in enumerate(list(range(-j, j + 1)))}
+        ind = [ind_m[m] for m in self.m_list[j]]
+        rot_m = rot_m[ind]
+
         rot_ind = self.r_ind[j][sym]
         vib_ind = self.v_ind[j][sym]
         coefs = self.vec[j][sym]
