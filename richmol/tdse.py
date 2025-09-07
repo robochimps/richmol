@@ -26,7 +26,6 @@ def propagate_expokit(
     no_krylov: int = 12,
     vec_tol: float = 0,
     timestep_func: Callable[[int, float, np.ndarray], None] = lambda *_: None,
-    m_list: list[int] | list[float] | None = None,
 ):
     time_units = {"ps": 1e-12, "fs": 1e-15, "ns": 1e-9}
     assert time_unit.lower() in time_units, (
@@ -34,7 +33,7 @@ def propagate_expokit(
         + f"accepted values: {list(time_units.keys())}"
     )
 
-    h0 = states.mat(m_list=m_list)
+    h0 = states.mat()
 
     fac = (
         -1j
@@ -53,10 +52,7 @@ def propagate_expokit(
         else:
             c_ = c[:, 0]
         c2 = np.sum(
-            [
-                f * tens.mat_vec(field, c_, m_list=m_list)
-                for f, tens in zip(fac[1:], tens_op)
-            ],
+            [f * tens.mat_vec(field, c_) for f, tens in zip(fac[1:], tens_op)],
             axis=0,
         )
         if not split_method:
@@ -122,7 +118,6 @@ def propagate_expm(
     split_method: bool = True,
     field_tol: float = 1e-12,
     timestep_func: Callable[[int, float, np.ndarray], None] = lambda *_: None,
-    m_list: list[int] | list[float] | None = None,
 ):
     time_units = {"ps": 1e-12, "fs": 1e-15, "ns": 1e-9}
     assert time_unit.lower() in time_units, (
@@ -130,7 +125,7 @@ def propagate_expm(
         + f"accepted values: {list(time_units.keys())}"
     )
 
-    h0 = states.mat(m_list=m_list)
+    h0 = states.mat()
 
     fac = (
         -1j
@@ -150,10 +145,7 @@ def propagate_expm(
         else:
             c_ = c[:, 0]
         c2 = np.sum(
-            [
-                f * tens.mat_vec(field, c_, m_list=m_list)
-                for f, tens in zip(fac[1:], tens_op)
-            ],
+            [f * tens.mat_vec(field, c_) for f, tens in zip(fac[1:], tens_op)],
             axis=0,
         )
         if not split_method:
@@ -165,10 +157,7 @@ def propagate_expm(
 
     def trace(field):
         tr = np.sum(
-            [
-                f * tens.mat_trace(field, m_list=m_list)
-                for f, tens in zip(fac[1:], tens_op)
-            ],
+            [f * tens.mat_trace(field) for f, tens in zip(fac[1:], tens_op)],
             axis=0,
         )
         if not split_method:
@@ -216,7 +205,6 @@ def propagate_rk(
     time_unit: str,
     c0: np.ndarray,
     t_eval: Optional[np.ndarray] = None,
-    m_list: list[int] | list[float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Computes time-dependent wavepacket coefficients by solving the
     time-dependent Schrödinger equation for a molecule interacting
@@ -283,7 +271,7 @@ def propagate_rk(
         + f"accepted values: {list(time_units.keys())}"
     )
 
-    h0 = states.mat(m_list=m_list)
+    h0 = states.mat()
 
     fac = (
         -1j
@@ -301,7 +289,7 @@ def propagate_rk(
         field = field_func(time)
         c2 = fac[0] * h0.dot(c)
         for f, tens in zip(fac[1:], tens_op):
-            c2 += f * tens.mat_vec(field, c, m_list=m_list)
+            c2 += f * tens.mat_vec(field, c)
         # c2 = c2 / np.linalg.norm(c2)
         return c2.view(np.float64)
 
