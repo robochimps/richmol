@@ -726,6 +726,7 @@ class MKTensor:
 
     j_list: list[int] | list[float]
     sym_list: dict[int, list[str]] | dict[float, list[str]]  # sym_list[j]
+    m_list: dict[int | float, list[int | float]]  # m_list[j]
     dim_k: dict[int, dict[str, int]] | dict[float, dict[str, int]]  # dim_k[j][sym]
     dim_m: dict[int, int] | dict[float, int]  # dim_m[j]
 
@@ -739,9 +740,7 @@ class MKTensor:
     #   where m' = -j1 .. j1, m = -j2 .. j2
     mmat: dict[tuple[int | float, int | float], dict[str, dict[int, csr_array]]]
 
-    def mat(
-        self, cart: str = "_", m_list: list[int] | list[float] | None = None
-    ) -> csr_array:
+    def mat(self, cart: str = "_") -> csr_array:
         """Assembles full matrix corresponding to a specific Cartesian component
         of the tensor operator.
 
@@ -765,9 +764,6 @@ class MKTensor:
         for j1, j2 in list(set(self.mmat.keys()) & set(self.kmat.keys())):
             try:
                 mmat = self.mmat[(j1, j2)][cart]
-                # select subspace of m-quanta
-                if m_list is not None:
-                    _, _, mmat = self._select_m_submat(j1, j2, m_list, mmat)
             except KeyError:
                 continue
 
@@ -788,12 +784,10 @@ class MKTensor:
             if me_sym:
                 me_j[(j1, j2)] = me_sym
 
-        mat = self._dict_to_mat(me_j, m_list=m_list)
+        mat = self._dict_to_mat(me_j)
         return mat
 
-    def mat_field(
-        self, field: np.ndarray, m_list: list[int] | list[float] | None = None
-    ) -> csr_array:
+    def mat_field(self, field: np.ndarray) -> csr_array:
         r"""Constructs the matrix resulting from contracting the Cartesian
         tensor operator with the given external field.
 
@@ -819,10 +813,6 @@ class MKTensor:
             mfmat = mf[(j1, j2)]
             kmat_j = self.kmat[(j1, j2)]
 
-            # select subspace of m-quanta
-            if m_list is not None:
-                _, _, mfmat = self._select_m_submat(j1, j2, m_list, mfmat)
-
             me_sym = {}
             for (sym1, sym2), kmat in kmat_j.items():
 
@@ -838,12 +828,10 @@ class MKTensor:
             if me_sym:
                 me_j[(j1, j2)] = me_sym
 
-        mat = self._dict_to_mat(me_j, m_list=m_list)
+        mat = self._dict_to_mat(me_j)
         return mat
 
-    def mat_trace(
-        self, field: np.ndarray, m_list: list[int] | list[float] | None = None
-    ) -> float:
+    def mat_trace(self, field: np.ndarray) -> float:
         """Computes trace of Cartesian tensor operator contracted
         with a given external field.
 
@@ -869,10 +857,6 @@ class MKTensor:
             mfmat = mf[(j1, j2)]
             kmat_j = self.kmat[(j1, j2)]
 
-            # select subspace of m-quanta
-            if m_list is not None:
-                _, _, mfmat = self._select_m_submat(j1, j2, m_list, mfmat)
-
             m_tr = {omega: mfmat[omega].sum() for omega in mfmat.keys()}
 
             for (sym1, sym2), kmat in kmat_j.items():
@@ -884,12 +868,7 @@ class MKTensor:
 
         return tr
 
-    def mat_vec(
-        self,
-        field: np.ndarray,
-        vec: np.ndarray,
-        m_list: list[int] | list[float] | None = None,
-    ) -> np.ndarray:
+    def mat_vec(self, field: np.ndarray, vec: np.ndarray) -> np.ndarray:
         """Computes the action of a Cartesian tensor operator on a vector,
         contracted with a given external field.
 
@@ -905,7 +884,7 @@ class MKTensor:
             np.ndarray:
                 The resulting vector after contraction with the field.
         """
-        vec_dict = self._vec_to_dict(vec, m_list)
+        vec_dict = self._vec_to_dict(vec)
 
         # multiply M-tensor with field
         mf = self._mf_tens(field)
@@ -918,15 +897,8 @@ class MKTensor:
             mfmat = mf[(j1, j2)]
             kmat_j = self.kmat[(j1, j2)]
 
-            if m_list is not None:
-                m_list_j1, m_list_j2, mfmat = self._select_m_submat(
-                    j1, j2, m_list, mfmat
-                )
-                dim_m1 = len(m_list_j1)
-                dim_m2 = len(m_list_j2)
-            else:
-                dim_m1 = self.dim_m[j1]
-                dim_m2 = self.dim_m[j2]
+            dim_m1 = self.dim_m[j1]
+            dim_m2 = self.dim_m[j2]
 
             if j1 not in vec2.keys():
                 vec2[j1] = {}
@@ -950,20 +922,6 @@ class MKTensor:
 
         vec2 = self._dict_to_vec(vec2)
         return vec2
-
-    def _select_m(self, j, m_list: list[int] | list[float]):
-        m_list_j = [m for m in m_list if abs(m) <= j]
-        ind_m = {m: im for im, m in enumerate(np.arange(-j, j + 1))}
-        i = [ind_m[m] for m in m_list_j]
-        return m_list_j, i
-
-    def _select_m_submat(
-        self, j1, j2, m_list: list[int] | list[float], mmat: dict[int, csr_array]
-    ):
-        m_list_j1, i1 = self._select_m(j1, m_list)
-        m_list_j2, i2 = self._select_m(j2, m_list)
-        mmat = {omega: m_val[i1][:, i2] for omega, m_val in mmat.items()}
-        return m_list_j1, m_list_j2, mmat
 
     def _mf_tens(self, field: np.ndarray, diag: bool = False):
         """Multiplies the M-tensor matrix elements with the input field
@@ -1006,20 +964,12 @@ class MKTensor:
                 mf[(j1, j2)] = mf_o
         return mf
 
-    def _vec_to_dict(
-        self, vec: np.ndarray, m_list: list[int] | list[float] | None = None
-    ):
+    def _vec_to_dict(self, vec: np.ndarray):
         """Converts vector vec[n] to vec[j][sym][k] where n runs across j -> sym -> k"""
         vec_dict = {}
         offset = 0
         for j in self.j_list:
-
-            if m_list is not None:
-                m_list_j, _ = self._select_m(j, m_list)
-                dim_m = len(m_list_j)
-            else:
-                dim_m = self.dim_m[j]
-
+            dim_m = self.dim_m[j]
             vec_dict[j] = {}
             for sym in self.sym_list[j]:
                 d = self.dim_k[j][sym] * dim_m
@@ -1035,20 +985,10 @@ class MKTensor:
                 blocks.append(vec_dict[j][sym])
         return np.concatenate(blocks)
 
-    def _dict_to_mat(
-        self, mat_dict, m_list: list[int] | list[float] | None = None
-    ) -> csr_array:
+    def _dict_to_mat(self, mat_dict) -> csr_array:
         """Converts matrix mat[(j1, j2)][(sym1, sym2)][k, l] to mat[n, m]
         where n, m run across j1, j2 -> sym1, sym2 -> k, l
         """
-        if m_list is not None:
-            dim_m = {}
-            for j in self.j_list:
-                m_list_j, _ = self._select_m(j, m_list)
-                dim_m[j] = len(m_list_j)
-        else:
-            dim_m = {j: self.dim_m[j] for j in self.j_list}
-
         mat = block_array(
             [
                 [
@@ -1059,8 +999,8 @@ class MKTensor:
                         else csr_array(
                             np.zeros(
                                 (
-                                    dim_m[j1] * self.dim_k[j1][sym1],
-                                    dim_m[j2] * self.dim_k[j2][sym2],
+                                    self.dim_m[j1] * self.dim_k[j1][sym1],
+                                    self.dim_m[j2] * self.dim_k[j2][sym2],
                                 )
                             )
                         )
@@ -1075,7 +1015,11 @@ class MKTensor:
         return mat
 
     def _threej_umat_spher_to_cart(
-        self, j1: int | float, j2: int | float, hyperfine: bool = False
+        self,
+        j1: int | float,
+        j2: int | float,
+        m_list: dict[int | float, list[int | float]],
+        hyperfine: bool = False,
     ):
         r"""Computes three-j symbol contracted with tensor's spherical-to-Cartesian
         transformation:
@@ -1089,8 +1033,8 @@ class MKTensor:
 
         Here, |j1, m'=-j1..j1> are bra states, and |j2, m=-j2..j2> are ket states.
         """
-        m_list1 = np.arange(-j1, j1 + 1)
-        m_list2 = np.arange(-j2, j2 + 1)
+        m_list1 = m_list[j1]
+        m_list2 = m_list[j2]
         m1 = np.array(m_list1)
         m2 = np.array(m_list2)
         m12 = np.concatenate(
@@ -1139,7 +1083,7 @@ class MKTensor:
                 self.umat_spher_to_cart[omega],
                 optimize="optimal",
             )
-        return m_list1, m_list2, threej_u
+        return threej_u
 
 
 class CartTensor(MKTensor):
@@ -1235,7 +1179,8 @@ class CartTensor(MKTensor):
         self.mmat = self._m_tens(states, thresh)
         self.j_list = states.j_list
         self.sym_list = states.sym_list
-        self.dim_m = {j: 2 * j + 1 for j in self.j_list}
+        self.m_list = states.m_list
+        self.dim_m = {j: len(m) for j, m in self.m_list.items()}
         self.dim_k = {
             j: {sym: len(states.enr[j][sym]) for sym in self.sym_list[j]}
             for j in self.j_list
@@ -1259,7 +1204,7 @@ class CartTensor(MKTensor):
             for j2 in states.j_list:
                 fac = np.sqrt(2 * j1 + 1) * np.sqrt(2 * j2 + 1)
 
-                m_list1, m_list2, threej_u = self._threej_umat_spher_to_cart(j1, j2)
+                threej_u = self._threej_umat_spher_to_cart(j1, j2, states.m_list)
 
                 me_cart = {}
                 for icart, cart in enumerate(self.cart_ind):

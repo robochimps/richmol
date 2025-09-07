@@ -54,6 +54,7 @@ class RotStates:
     r_ind: defaultdict[int, defaultdict[str, np.ndarray]]
     v_ind: defaultdict[int, defaultdict[str, np.ndarray]]
     jktau_list: dict[int, list[tuple[int, int, int, str]]]
+    m_list: dict[int, list[int]]
     enr_units: Energy_units
 
     _id: str = field(init=False)
@@ -75,7 +76,7 @@ class RotStates:
 
     def __post_init__(self):
         self._id = str(uuid.uuid4())
-        self.dim_m = {j: 2 * j + 1 for j in self.j_list}
+        self.dim_m = {j: len(m) for j, m in self.m_list.items()}
         self.dim_k = {
             j: {sym: len(self.enr[j][sym]) for sym in self.sym_list[j]}
             for j in self.j_list
@@ -110,7 +111,7 @@ class RotStates:
                 for i in range(len(e)):
                     ind = np.argmax(v[:, i] ** 2)
                     qua_k.append((*jktau[ind], v[ind, i]))
-                qua_mk = [(q[0], m, *q[1:]) for m in range(-j, j + 1) for q in qua_k]
+                qua_mk = [(q[0], m, *q[1:]) for m in self.m_list[j] for q in qua_k]
                 quanta_sym[sym] = qua_mk
                 quanta_sym_k[sym] = qua_k
             self.quanta_dict[j] = quanta_sym
@@ -125,6 +126,7 @@ class RotStates:
         print_enr: bool = False,
         rotations: list[RzBeta | RalphaPi | R0] = [R0()],
         irreps: dict[str, list[int]] = {"A": [1]},
+        m_list: list[int] | None = None,
     ):
         print(
             "\nCompute rotational solutions using Watson's effective Hamiltonian approach"
@@ -218,6 +220,7 @@ class RotStates:
             enr_units=enr_units,
             rotations=rotations,
             irreps=irreps,
+            m_list=m_list,
         )
 
     @classmethod
@@ -228,6 +231,7 @@ class RotStates:
         print_enr: bool = False,
         rotations: list[RzBeta | RalphaPi | R0] = [R0()],
         irreps: dict[str, list[int]] = {"A": [1]},
+        m_list: list[int] | None = None,
     ):
         """Computes rigid rotor states from a given molecular geometry.
 
@@ -351,6 +355,7 @@ class RotStates:
             enr_units=enr_units,
             rotations=rotations,
             irreps=irreps,
+            m_list=m_list,
         )
 
     @classmethod
@@ -365,6 +370,7 @@ class RotStates:
         enr_units: Energy_units,
         rotations: list[RzBeta | RalphaPi | R0],
         irreps: dict[str, list[int]],
+        m_list: list[int] | None,
     ):
         # identify symmetry of symmetric-top function in Wang representation
 
@@ -388,6 +394,15 @@ class RotStates:
         k_list = {}
 
         j_list = [j for j in range(max_j + 1)]
+
+        # consider m quanta, truncate j_list if necessary
+        if m_list is None:
+            m_list_j = {j: list(range(-j, j + 1)) for j in j_list}
+        else:
+            m_list_j = {j: [m for m in m_list if abs(m) <= j] for j in j_list}
+        j_list = [j for j, m in m_list_j.items() if len(m) > 0]
+        m_list_j = {j: m_list_j[j] for j in j_list}
+
         sym_list = {j: [] for j in j_list}
 
         for j in j_list:
@@ -456,18 +471,15 @@ class RotStates:
             r_ind,
             v_ind,
             jktau_list,
+            m_list_j,
             enr_units,
         )
 
-    def mat(self, m_list: list[int] | None = None):
+    def mat(self):
         e0 = []
         for j in self.j_list:
             for sym in self.sym_list[j]:
-                if m_list is None:
-                    m_list_j = list(range(-j, j + 1))
-                else:
-                    m_list_j = [m for m in m_list if abs(m) <= j]
-                for m in m_list_j:
+                for m in self.m_list[j]:
                     e0.append(self.enr[j][sym])
         return csr_array(diags(np.concatenate(e0)))
 
