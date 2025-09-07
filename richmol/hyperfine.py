@@ -132,6 +132,7 @@ class HyperStates:
         efg_op: list[CartTensor | None] = [],
         symmetry_rules=_symmetry_spin_rotation_placeholder,
         keep_h: bool = False,
+        m_list: list[int] | list[float] | None = None,
     ):
         print("\nCompute hyperfine states")
 
@@ -168,9 +169,20 @@ class HyperStates:
 
         # generate combinations of rovibrational and spin angular momentum quantum numbers
 
-        self.f_list = [
+        f_list = [
             round(f, 1) for f in np.linspace(min_f, max_f, int(max_f - min_f) + 1)
         ]
+
+        # consider m quanta, truncate f_list if necessary
+        if m_list is None:
+            m_list_f = {f: np.arange(-f, f + 1) for f in f_list}
+        else:
+            m_list_f = {
+                f: np.array([float(m) for m in m_list if abs(m) <= f]) for f in f_list
+            }
+        self.f_list = [f for f, m in m_list_f.items() if len(m) > 0]
+        self.m_list = {f: m_list_f[f] for f in self.f_list}
+
         print(f"List of F quanta: {self.f_list}")
 
         self.j_spin_list = {}
@@ -281,7 +293,7 @@ class HyperStates:
         self.spin_op = spin_op
         self._rot_states_id = states._id
 
-        self.dim_m = {f: int(2 * f) + 1 for f in self.f_list}
+        self.dim_m = {f: len(m) for f, m in self.m_list.items()}
         self.dim_k = {
             f: {sym: len(self.enr[f][sym]) for sym in self.f_sym_list[f]}
             for f in self.f_list
@@ -329,9 +341,7 @@ class HyperStates:
                     ind = np.argmax(v[:, i] ** 2)
                     qua_k.append((*qua[ind], v[ind, i]))
 
-                qua_mk = [
-                    (q[0], m, *q[1:]) for m in np.arange(-f, f + 1) for q in qua_k
-                ]
+                qua_mk = [(q[0], m, *q[1:]) for m in self.m_list[f] for q in qua_k]
 
                 # sum of squares of coefficients for different total nuclear spins
 
@@ -629,7 +639,7 @@ class HyperStates:
         e0 = []
         for f in self.f_list:
             for sym in self.f_sym_list[f]:
-                for m in np.arange(-f, f + 1):
+                for m in self.m_list[f]:
                     e0.append(self.enr[f][sym])
         return csr_array(diags(np.concatenate(e0)))
 
@@ -802,7 +812,8 @@ class HyperCartTensor(MKTensor):
         self.mmat = self._m_tens(states, thresh)
         self.j_list = states.f_list
         self.sym_list = states.f_sym_list
-        self.dim_m = {f: int(2 * f) + 1 for f in self.j_list}
+        self.m_list = states.m_list
+        self.dim_m = {f: len(m) for f, m in self.m_list.items()}
         self.dim_k = {
             f: {sym: len(states.enr[f][sym]) for sym in self.sym_list[f]}
             for f in self.j_list
@@ -862,8 +873,8 @@ class HyperCartTensor(MKTensor):
         m_me = {}
         for f1 in states.f_list:
             for f2 in states.f_list:
-                m_list1, m_list2, threej_u = self._threej_umat_spher_to_cart(
-                    f1, f2, hyperfine=True
+                threej_u = self._threej_umat_spher_to_cart(
+                    f1, f2, states.m_list, hyperfine=True
                 )
 
                 fac = np.sqrt((2 * f1 + 1) * (2 * f2 + 1))
@@ -960,7 +971,8 @@ class Spin1Tensor(MKTensor):
         self.mmat = self._m_tens(states, thresh)
         self.j_list = states.f_list
         self.sym_list = states.f_sym_list
-        self.dim_m = {f: int(2 * f) + 1 for f in self.j_list}
+        self.m_list = states.m_list
+        self.dim_m = {f: len(m) for f, m in self.m_list.items()}
         self.dim_k = {
             f: {sym: len(states.enr[f][sym]) for sym in self.sym_list[f]}
             for f in self.j_list
@@ -1024,8 +1036,8 @@ class Spin1Tensor(MKTensor):
         m_me = {}
         for f1 in states.f_list:
             for f2 in states.f_list:
-                m_list1, m_list2, threej_u = self._threej_umat_spher_to_cart(
-                    f1, f2, hyperfine=True
+                threej_u = self._threej_umat_spher_to_cart(
+                    f1, f2, states.m_list, hyperfine=True
                 )
                 fac = np.sqrt((2 * f1 + 1) * (2 * f2 + 1))
 
