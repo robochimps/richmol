@@ -7,7 +7,7 @@ from scipy.sparse.linalg import LinearOperator, expm_multiply, onenormest
 
 from .asymtop import RotStates
 from .cartens import CartTensor
-from .constants import ENR_INVCM_JOULE
+from .constants import ENR_INVCM_JOULE, ENR_INVCM_MHZ
 from .pyexpokit import zhexpv
 
 
@@ -33,13 +33,27 @@ def propagate_expokit(
         + f"accepted values: {list(time_units.keys())}"
     )
 
+    try:
+        enr_units = states.enr_units
+    except AttributeError:
+        raise AttributeError(f"States object has no attribute 'enr_units'") from None
+
+    if enr_units == "invcm":
+        enr_to_joule = ENR_INVCM_JOULE
+    elif enr_units == "mhz":
+        enr_to_joule = ENR_INVCM_JOULE / ENR_INVCM_MHZ
+    else:
+        raise ValueError(f"Unknown value for 'enr_units' = {enr_units}") from None
+
+    print(f"energy units: {enr_units}")
+
     h0 = states.mat()
 
     fac = (
         -1j
         * dt
         * np.array([1] + tens_prefac)
-        * ENR_INVCM_JOULE
+        * enr_to_joule
         / constants.value("reduced Planck constant")
         * time_units[time_unit]
     )
@@ -125,13 +139,27 @@ def propagate_expm(
         + f"accepted values: {list(time_units.keys())}"
     )
 
+    try:
+        enr_units = states.enr_units
+    except AttributeError:
+        raise AttributeError(f"States object has no attribute 'enr_units'") from None
+
+    if enr_units == "invcm":
+        enr_to_joule = ENR_INVCM_JOULE
+    elif enr_units == "mhz":
+        enr_to_joule = ENR_INVCM_JOULE / ENR_INVCM_MHZ
+    else:
+        raise ValueError(f"Unknown value for 'enr_units' = {enr_units}") from None
+
+    print(f"energy units: {enr_units}")
+
     h0 = states.mat()
 
     fac = (
         -1j
         * dt
         * np.array([1] + tens_prefac)
-        * ENR_INVCM_JOULE
+        * enr_to_joule
         / constants.value("reduced Planck constant")
         * time_units[time_unit]
     )
@@ -271,12 +299,26 @@ def propagate_rk(
         + f"accepted values: {list(time_units.keys())}"
     )
 
+    try:
+        enr_units = states.enr_units
+    except AttributeError:
+        raise AttributeError(f"States object has no attribute 'enr_units'") from None
+
+    if enr_units == "invcm":
+        enr_to_joule = ENR_INVCM_JOULE
+    elif enr_units == "mhz":
+        enr_to_joule = ENR_INVCM_JOULE / ENR_INVCM_MHZ
+    else:
+        raise ValueError(f"Unknown value for 'enr_units' = {enr_units}") from None
+
+    print(f"energy units: {enr_units}")
+
     h0 = states.mat()
 
     fac = (
         -1j
         * np.array([1] + tens_prefac)
-        * ENR_INVCM_JOULE
+        * enr_to_joule
         / constants.value("reduced Planck constant")
         * time_units[time_unit]
     )
