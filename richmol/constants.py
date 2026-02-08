@@ -103,3 +103,8 @@ HYPERPOL_X_FIELD3_INVCM = Constant(
     val=HYPERPOL_X_FIELD3_JOULE / ENR_INVCM_JOULE,
     doc="To convert from Hyperpolarizability[a.u.] * Field^3[a.u.^3] to (Hyperpolarizability * Field^3)[cm^-1]",
 )
+
+DIP_X_FIELD_MHZ = Constant(
+    val=DIP_X_FIELD_JOULE / constants.value("Planck constant") * 1e-6,
+    doc="To convert from Dipole[a.u.] * Field[a.u.] to (Dipole * Field)[MHz]",
+)
