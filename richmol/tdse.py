@@ -27,7 +27,7 @@ def propagate_expokit(
     vec_tol: float = 0,
     timestep_func: Callable[[int, float, np.ndarray], None] = lambda *_: None,
 ):
-    time_units = {"ps": 1e-12, "fs": 1e-15, "ns": 1e-9}
+    time_units = {"ps": 1e-12, "fs": 1e-15, "ns": 1e-9, "us": 1e-6}
     assert time_unit.lower() in time_units, (
         f"Unknown value for 'time_unit' = {time_unit}, "
         + f"accepted values: {list(time_units.keys())}"
@@ -133,7 +133,7 @@ def propagate_expm(
     field_tol: float = 1e-12,
     timestep_func: Callable[[int, float, np.ndarray], None] = lambda *_: None,
 ):
-    time_units = {"ps": 1e-12, "fs": 1e-15, "ns": 1e-9}
+    time_units = {"ps": 1e-12, "fs": 1e-15, "ns": 1e-9, "us": 1e-6}
     assert time_unit.lower() in time_units, (
         f"Unknown value for 'time_unit' = {time_unit}, "
         + f"accepted values: {list(time_units.keys())}"
@@ -293,7 +293,7 @@ def propagate_rk(
             - `c_t`:Array of complex wavepacket coefficients at each time in
             `t_eval`, with shape (len(t_eval), len(c0)).
     """
-    time_units = {"ps": 1e-12, "fs": 1e-15, "ns": 1e-9}
+    time_units = {"ps": 1e-12, "fs": 1e-15, "ns": 1e-9, "us": 1e-6}
     assert time_unit.lower() in time_units, (
         f"Unknown value for 'time_unit' = {time_unit}, "
         + f"accepted values: {list(time_units.keys())}"
