@@ -11,6 +11,127 @@ from .constants import ENR_INVCM_JOULE, ENR_INVCM_MHZ
 from .pyexpokit import zhexpv
 
 
+def propagate_expokit_eb(
+    states: RotStates,
+    tens_op: tuple[list[CartTensor], list[CartTensor]],
+    tens_prefac: tuple[list[float], list[float]],
+    field_func: tuple[Callable[[float], np.ndarray], Callable[[float], np.ndarray]],
+    t0: float,
+    t1: float,
+    dt: float,
+    time_unit: str,
+    c0: np.ndarray,
+    split_method: bool = True,
+    field_tol: tuple[float, float] = [1e-12, 1e-12],
+    no_krylov: int = 12,
+    vec_tol: float = 0,
+    timestep_func: Callable[[int, float, np.ndarray], None] = lambda *_: None,
+):
+    time_units = {"ps": 1e-12, "fs": 1e-15, "ns": 1e-9, "us": 1e-6}
+    assert time_unit.lower() in time_units, (
+        f"Unknown value for 'time_unit' = {time_unit}, "
+        + f"accepted values: {list(time_units.keys())}"
+    )
+
+    try:
+        enr_units = states.enr_units
+    except AttributeError:
+        raise AttributeError(f"States object has no attribute 'enr_units'") from None
+
+    if enr_units == "invcm":
+        enr_to_joule = ENR_INVCM_JOULE
+    elif enr_units == "mhz":
+        enr_to_joule = ENR_INVCM_JOULE / ENR_INVCM_MHZ
+    else:
+        raise ValueError(f"Unknown value for 'enr_units' = {enr_units}") from None
+
+    print(f"energy units: {enr_units}")
+
+    h0 = states.mat()
+
+    fac0 = (
+        -1j
+        * dt
+        * enr_to_joule
+        / constants.value("reduced Planck constant")
+        * time_units[time_unit]
+    )
+
+    fac = [
+        -1j
+        * dt
+        * np.array(prefac)
+        * enr_to_joule
+        / constants.value("reduced Planck constant")
+        * time_units[time_unit]
+        for prefac in tens_prefac
+    ]
+
+    h0_exp = np.exp(0.5 * fac0 * h0.diagonal())
+
+    def matvec(c, field):
+        if c.ndim == 1:
+            c_ = c
+        else:
+            c_ = c[:, 0]
+        c2 = np.sum(
+            [
+                fc * tens.mat_vec(field1, c_)
+                for fac1, tens1, field1 in zip(fac, tens_op, field)
+                for fc, tens in zip(fac1, tens1)
+            ],
+            axis=0,
+        )
+        if not split_method:
+            c2 += fac0 * h0.dot(c_)
+        if c.ndim == 1:
+            return c2
+        else:
+            return np.array([c2]).T
+
+    nt = int((t1 - t0) / dt)
+    time = np.linspace(t0, t1, num=nt, endpoint=False)
+    time_dt = time + dt
+    time_dt_c = time + dt / 2
+
+    c = c0.copy()
+    c_t = []
+
+    for it, t in enumerate(time_dt_c):
+        field = [fn(t) for fn in field_func]
+        matvec_t = lambda c: matvec(c, field)
+
+        if split_method:
+            c = c * h0_exp
+            if np.any(np.linalg.norm(field, axis=-1) > field_tol):
+                norm = onenormest(
+                    LinearOperator(
+                        shape=h0.shape,
+                        dtype=np.complex128,
+                        matvec=matvec_t,
+                        rmatvec=matvec_t,
+                    )
+                )
+                c = zhexpv(c, no_krylov, norm, matvec_t, tol=vec_tol)
+            c = c * h0_exp
+        else:
+            norm = onenormest(
+                LinearOperator(
+                    shape=h0.shape,
+                    dtype=np.complex128,
+                    matvec=matvec_t,
+                    rmatvec=matvec_t,
+                )
+            )
+            c = zhexpv(c, no_krylov, norm, matvec_t, tol=vec_tol)
+
+        c_t.append(c)
+        timestep_func(it, time_dt[it], c)
+
+    c_t = np.array(c_t)
+    return time_dt, c_t
+
+
 def propagate_expokit(
     states: RotStates,
     tens_op: list[CartTensor],
