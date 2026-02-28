@@ -133,6 +133,7 @@ class HyperStates:
         symmetry_rules=_symmetry_spin_rotation_placeholder,
         keep_h: bool = False,
         m_list: list[int] | list[float] | None = None,
+        print_enr: bool = False,
     ):
         print("\nCompute hyperfine states")
 
@@ -286,6 +287,57 @@ class HyperStates:
             self.vec[f] = vec
             if keep_h:
                 self.h[f] = h_sym
+
+        # print solutions
+
+        print("Energy units:", states.enr_units)
+
+        if print_enr:
+            print(
+                f"{'F':>5} {'Irrep':>5} {'i':>4} {'Energy':>18} {'c_max²':>10} {'(J,k,tau,Irrep)':>18} {'(I_1...I_N,Irrep)':>18}"
+            )
+            for f in self.f_list:
+                for sym in self.f_sym_list[f]:
+                    e = self.enr[f][sym]
+                    v = self.vec[f][sym]
+                    qua = [
+                        (f, j, spin, j_sym, spin_sym, rot_qua)
+                        for (j, spin, j_sym, spin_sym, *_) in self.j_spin_list[f][sym]
+                        for rot_qua in states.quanta_dict_k[j][j_sym]
+                    ]
+                    for i in range(len(e)):
+                        c2 = v[:, i] ** 2
+                        ind_desc = np.argsort(c2)[::-1]
+                        # find how many coeffs^2 are needed to reach the fraction of 90%
+                        k = np.searchsorted(np.cumsum(c2[ind_desc]), 0.9) + 1
+                        largest_ind = ind_desc[:k]
+                        for ii, ind in enumerate(largest_ind):
+                            f, j, spin, j_sym, spin_sym, (j, k, tau, rot_c) = qua[ind]
+                            if ii == 0:
+                                print(
+                                    f"{f:5.1f} "
+                                    f"{sym:>5} "
+                                    f"{i:4d} "
+                                    f"{e[i]:18.8f} "
+                                    f"{c2[ind]:10.6f}   "
+                                    f"{j:>3d} "
+                                    f"{k:>3d} "
+                                    f"{tau:>1d} "
+                                    f"{j_sym:>5}    "
+                                    f"{' '.join("%4.1f"%elem for elem in spin)}"
+                                    f"{spin_sym:>5}"
+                                )
+                            else:
+                                print(
+                                    " " * 35,
+                                    f"{c2[ind]:10.6f}   "
+                                    f"{j:>3d} "
+                                    f"{k:>3d} "
+                                    f"{tau:>1d} "
+                                    f"{j_sym:>5}    "
+                                    f"{' '.join("%4.1f"%elem for elem in spin)}"
+                                    f"{spin_sym:>5}",
+                                )
 
         # add dimensions and state assignment
 
