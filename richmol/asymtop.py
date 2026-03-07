@@ -16,6 +16,7 @@ from scipy.spatial.transform import Rotation
 from .rotsym import R0, RalphaPi, RzBeta, wang_symmetry_by_sampling
 from .symtop import rotme_rot, rotme_watson, symtop_on_grid_split_angles
 from .units import UnitType
+from .constants import ENR_INVCM_MHZ
 
 jax.config.update("jax_enable_x64", True)
 
@@ -232,6 +233,7 @@ class RotStates:
         rotations: list[RzBeta | RalphaPi | R0] = [R0()],
         irreps: dict[str, list[int]] = {"A": [1]},
         m_list: list[int] | None = None,
+        enr_units: Energy_units = "invcm",
     ):
         """Computes rigid rotor states from a given molecular geometry.
 
@@ -334,15 +336,17 @@ class RotStates:
 
         G = (u @ np.diag(d) @ v) * G_TO_INVCM
 
-        print("G-matrix from input Cartesian coordinates (cm^-1):\n", G)
+        if enr_units == "invcm":
+            print("G-matrix from input Cartesian coordinates (cm^-1):\n", G)
+        elif enr_units == "mhz":
+            G = G * ENR_INVCM_MHZ
+            print("G-matrix from input Cartesian coordinates (mhz):\n", G)
 
         # define Hamiltonian as function of J
         def ham_func(j):
             me, k_list, jktau_list = rotme_rot(j=j, linear=linear)
             ham = 0.5 * np.einsum("ab,abij->ij", G, me, optimize="optimal")
             return ham, k_list, jktau_list
-
-        enr_units: Energy_units = "invcm"
 
         # solve Schrödinger equation
         return cls._solve(
