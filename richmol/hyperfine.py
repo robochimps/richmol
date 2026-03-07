@@ -309,7 +309,7 @@ class HyperStates:
                         c2 = v[:, i] ** 2
                         ind_desc = np.argsort(c2)[::-1]
                         # find how many coeffs^2 are needed to reach the fraction of 90%
-                        k = np.searchsorted(np.cumsum(c2[ind_desc]), 0.9) + 1
+                        k = np.searchsorted(np.cumsum(c2[ind_desc]), 0.999999) + 1
                         largest_ind = ind_desc[:k]
                         for ii, ind in enumerate(largest_ind):
                             f, j, spin, j_sym, spin_sym, (j, k, tau, rot_c) = qua[ind]
