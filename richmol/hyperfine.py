@@ -11,7 +11,6 @@ from .constants import ENR_INVCM_MHZ
 from .nucspin import *
 
 # Conversion from EFG[a.u.]*Q[mb] to EFG*Q[cm^-1]
-
 quad_mb_to_meter2 = 1e-31
 efg_au_to_volts_per_meter2 = constants.value("atomic unit of electric field gradient")
 efg_x_quad_joul = (
@@ -34,6 +33,21 @@ for label in ENERGY_UNITS:
         raise ValueError(
             f"Unsupported energy unit '{label}' for quadrupole interaction conversion.\n"
             f"Supported units: {', '.join(SUPPORTED_QUAD_UNITS)}"
+        )
+
+# Conversion from Spin-Rotation[kHz] to [MHz] and [cm^-1]
+SPINROT_KHZ_MHZ = 1e-3
+SPINROT_KHZ_INVCM = 1e-3 / ENR_INVCM_MHZ
+
+SUPPORTED_SPINROT_UNITS = {"mhz": SPINROT_KHZ_MHZ, "invcm": SPINROT_KHZ_INVCM}
+SPINROT_UNIT_FAC = {}
+for label in ENERGY_UNITS:
+    try:
+        SPINROT_UNIT_FAC[label] = SUPPORTED_SPINROT_UNITS[label]
+    except KeyError:
+        raise ValueError(
+            f"Unsupported energy unit '{label}' for spin-rotation interaction conversion.\n"
+            f"Supported units: {', '.join(SUPPORTED_SPINROT_UNITS)}"
         )
 
 
@@ -130,6 +144,7 @@ class HyperStates:
         states: RotStates,
         spin_op: list[SpinOperator],
         efg_op: list[CartTensor | None] = [],
+        spinrot_op: list[CartTensor | None] = [],
         symmetry_rules=_symmetry_spin_rotation_placeholder,
         keep_h: bool = False,
         m_list: list[int] | list[float] | None = None,
@@ -140,7 +155,7 @@ class HyperStates:
         assert min_f <= max_f, f"'min_f'> 'max_f': {min_f} > {max_f}"
         assert len(spin_op) > 0, f"'spin_op' is empty"
 
-        # check input for quadrupole
+        # Check input for quadrupole
 
         quad_op_ind = []  # elements of `spin_op` and `efg_op` for quadrupole coupling
 
@@ -167,6 +182,40 @@ class HyperStates:
                         ) from None
 
                     quad_op_ind.append(i)
+
+        # Check input for spin-rotation
+
+        spinrot_op_ind = []  # match elements of `spin_op` and `spinrot_op`
+
+        if len(spinrot_op) > 0:
+            if len(spinrot_op) != len(spin_op):
+                raise ValueError(
+                    f"'spinrot_op' and 'spin_op' must have the same number of elements,"
+                    f"len(spinrot_op) = {len(spinrot_op)}, len(spin_op) = {len(spin_op)}"
+                )
+
+            spin_op_sr = []
+
+            for i, spinrot in enumerate(spinrot_op):
+                if spinrot is not None:
+                    if hasattr(spin_op[i], "Q"):
+                        # this means that spin operator in `spin_op` is quadrupole, `QuadMom`,
+                        # that computes reduced matrix elements for nuclear quadrupole operator
+                        # <I'||Q(n)||I>, so need to initialize from it a spin operator, `Spin`,
+                        # in order to have correct reduced matrix elements <I'||I(n)||I>
+                        # for spin-rotation interaction
+                        spin_op_i = Spin(spin=spin_op[i].spin)
+                    else:
+                        spin_op_i = spin_op[i]
+
+                    if not spinrot.spher_ind == Rank2Tensor().spher_ind:
+                        raise ValueError(
+                            f"Spin-rotation tensor in 'spinrot_op[{i}]' has invalid attribute 'spher_ind': {spinrot.spher_ind}, "
+                            + f"expected: {Rank2Tensor.spher_ind}"
+                        ) from None
+
+                    spin_op_sr.append(spin_op_i)
+                    spinrot_op_ind.append(i)
 
         # generate combinations of rovibrational and spin angular momentum quantum numbers
 
@@ -268,6 +317,21 @@ class HyperStates:
                             [efg_op[i] for i in quad_op_ind],
                         ).toarray()
                         * QUAD_UNIT_FAC[states.enr_units]
+                    )
+
+                # add spin-rotation interaction Hamiltonian
+
+                if len(spinrot_op_ind) > 0:
+                    print(f"add spin-rotation, energy units: {states.enr_units}")
+                    h = (
+                        h
+                        + _spinrot_me(
+                            f,
+                            self.j_spin_list[f][sym],
+                            spin_op_sr,
+                            [spinrot_op[i] for i in spinrot_op_ind],
+                        ).toarray()
+                        * SPINROT_UNIT_FAC[states.enr_units]
                     )
 
                 # diagonalization
@@ -773,6 +837,111 @@ def _quadrupole_me(
             h_.append(prefac * me)
 
         h.append(h_)
+
+    h = block_array(h)
+    return h
+
+
+def _spinrot_me(
+    f_val: float,
+    j_spin_list: list[tuple[int, tuple[float], str, str, int]],
+    spin_op: list[SpinOperator],
+    spinrot_tens: list[CartTensor],
+    zero_tol: float = 1e-12,
+):
+    norm_const = (1, -np.sqrt(3), np.sqrt(5))
+
+    spin_list = [spin for (_, spin, *_) in j_spin_list]
+
+    # Reduced matrix elements <I'||I(n)||I>
+    reduced_spin_me = reduced_me(spin_list, spin_list, spin_op)
+
+    h = []
+    for j1, spin1, j_sym1, spin_sym1, j_dim1 in j_spin_list:
+
+        threej1 = py3nj.wigner3j(
+            2 * j1, 2, 2 * j1, -2 * j1, 0, 2 * j1, ignore_invalid=True
+        )
+        inv_threej1 = 0.0 if np.abs(threej1) < zero_tol else 1.0 / threej1
+
+        h_row = []
+        for j2, spin2, j_sym2, spin_sym2, j_dim2 in j_spin_list:
+
+            threej2 = py3nj.wigner3j(
+                2 * j2, 2, 2 * j2, -2 * j2, 0, 2 * j2, ignore_invalid=True
+            )
+            inv_threej2 = 0.0 if np.abs(threej2) < zero_tol else 1.0 / threej2
+
+            zero_block = csr_array(np.zeros((j_dim1, j_dim2)))
+
+            try:
+                red_spin_me = reduced_spin_me[(spin1, spin2)]
+            except KeyError:
+                h_row.append(zero_block)
+                continue
+
+            fac = spin2[-1] + f_val
+            assert float(fac).is_integer(), f"Non-integer power in (-1)**f: (-1)**{fac}"
+            fac = int(fac)
+            prefac = (
+                0.5
+                * (-1) ** fac
+                * np.sqrt((2 * j1 + 1) * (2 * j2 + 1))
+                * py3nj.wigner6j(
+                    int(2 * spin1[-1]),
+                    2 * j1,
+                    int(2 * f_val),
+                    2 * j2,
+                    int(2 * spin2[-1]),
+                    2,
+                    ignore_invalid=True,
+                )
+            )
+
+            if np.abs(prefac) < zero_tol:
+                h_row.append(zero_block)
+                continue
+
+            block_me = 0
+            for omega in range(3):
+
+                # sum over nuclei: \sum_n M(n) * <I'||I(n)||I>
+                me = 0
+                for spinrot_me, spin_me in zip(spinrot_tens, red_spin_me):
+                    try:
+                        kmat = spinrot_me.kmat[(j1, j2)][(j_sym1, j_sym2)][omega]
+                    except KeyError:
+                        continue
+                    me += kmat * spin_me
+
+                if isinstance(me, int) and me == 0:
+                    continue
+
+                fac1 = (
+                    (-1) ** omega
+                    * j2
+                    * py3nj.wigner6j(
+                        2 * omega, 2, 2, 2 * j2, 2 * j1, 2 * j2, ignore_invalid=True
+                    )
+                    * inv_threej2
+                )
+
+                fac2 = (
+                    j1
+                    * py3nj.wigner6j(
+                        2, 2 * omega, 2, 2 * j2, 2 * j1, 2 * j1, ignore_invalid=True
+                    )
+                    * inv_threej1
+                )
+
+                block_me += prefac * norm_const[omega] * (fac1 + fac2) * me
+
+            if isinstance(block_me, int) and block_me == 0:
+                h_row.append(zero_block)
+            else:
+                h_row.append(block_me)
+
+        h.append(h_row)
 
     h = block_array(h)
     return h
