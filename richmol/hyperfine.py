@@ -81,38 +81,69 @@ def _symmetry_spin_rotation_placeholder(
 
 
 class HyperStates:
-    """Computes hyperfine states using molecular rovibrational states
-    and rovibrational matrix elements of electric and magnetic spin
-    interaction tensors.
+    """Computes molecular hyperfine energy levels and wavefunctions in a coupled spin-rovibrational
+    basis |F, m_F, J, (I_1, I_12, ..., I)⟩ from rovibrational states and matrix elements
+    of nuclear electric quadrupole and magnetic spin-rotation interaction tensors.
 
     Args:
         min_f (float):
-            Minimal total angular momentum quantum number F = I + J,
-            where I is the total nuclear spin and J is the rotational
-            angular momentum.
-
+            Minimal total angular momentum quantum number F, where F = J + I, J is the rotational
+            angular momentum, and I is the total nuclear spin.
         max_f (float):
-            Maximal total angular momentum quantum number F = I + J.
-
+            Maximal total angular momentum quantum number F.
         states (RotStates):
-            Molecular rotational or rovibrational energy states
-            used as the basis for hyperfine calculations.
-
+            Molecular rotational or rovibrational states used as the basis for the hyperfine calculation.
         spin_op (list[SpinOperator]):
-            List of nuclear spin operators for each coupled nucleus.
-
+            List of nuclear spin operators (`Spin` or `QuadMom`) for each coupled nucleus.
+            The order of elements defines the sequential spin-coupling scheme (I_1, I_12, ..., I_1N = I).
+            Nuclei with non-None entries in `efg_op` must be `QuadMom` instances, with quadrupole moment `Q` in mb.
         efg_op (list[CartTensor | None], optional):
-            List of electric field gradient tensors corresponding
-            to each spin operator in `spin_op`.
-            For non-quadrupolar nuclei, set the corresponding entry to `None`.
-            Each EFG tensor must be in atomic units.
-            Defaults to an empty list, meaning quadrupole interactions are excluded.
-
+            List of rank-2 electric field gradient (EFG) tensors in atomic units, ordered to match `spin_op`.
+            Set entries for non-quadrupolar or excluded nuclei to `None`.
+            Defaults to `[]`, no quadrupole coupling.
         spinrot_op (list[CartTensor | None], optional):
-            List of spin-rotation tensors corresponding to each spin operator in `spin_op`.
-            For nuclei with zero or neglected spin-rotation, set the corresponding entry to `None`.
-            Each spin-rotation tensor must be in kHz units.
-            Defaults to an empty list, meaning spin-rotation interactions are excluded.
+            List of rank-2 nuclear spin-rotation tensors in kHz, ordered to match `spin_op`.
+            Set entries for excluded nuclei to `None`.
+            Defaults to `[]`, no spin-rotation coupling.
+        symmetry_rules (Callable, optional):
+            Function `symmetry_rules(j_list, j_sym_list, spin_list)` returning a
+            dictionary `{f_sym: [(j, spin, rovib_sym, spin_sym), ...]}` that groups
+            coupled spin-rovibrational basis states by total symmetry `f_sym`.
+            Defaults to `_symmetry_spin_rotation_placeholder`.
+        keep_h (bool, optional):
+            If True, stores the hyperfine interaction Hamiltonian blocks (H - H_rovib) in `self.h[f][sym]`.
+            Defaults to False.
+        m_list (list[int] | list[float] | None, optional):
+            Magnetic quantum numbers m_F to include (filtered by |m_F| <= F).
+            If None, all m_F = -F, -F + 1, ..., F are included. Defaults to None.
+        print_enr (bool, optional):
+            If True, prints a table of computed hyperfine energies and dominant basis-state contributions.
+            Defaults to False.
+
+    Attributes:
+        f_list (list[float]):
+            Sorted list of total angular momentum quantum numbers F.
+        m_list (dict[float, np.ndarray]):
+            Included magnetic quantum numbers m_F for each F.
+        f_sym_list (dict[float, list[str]]):
+            List of total symmetry labels for each F.
+        enr0 (dict[float, dict[str, np.ndarray]]):
+            Unperturbed rovibrational energies for each (F, sym) block.
+        enr (dict[float, dict[str, np.ndarray]]):
+            Hyperfine eigenenergies for each (F, sym) block, in `states.enr_units` ('mhz' or 'invcm').
+        vec (dict[float, dict[str, np.ndarray]]):
+            Hyperfine eigenvectors (columns) in the coupled spin-rovibrational basis for each (F, sym) block.
+        h (dict[float, dict[str, np.ndarray]]):
+            Hyperfine interaction Hamiltonian matrices for each (F, sym) block (only if `keep_h=True`).
+        enr_units (Energy_units):
+            Energy units inherited from `states` ('mhz' or 'invcm').
+        quanta_dict_k (dict[float, dict[str, list[tuple]]]):
+            Dominant basis quantum numbers and expansion coefficient for each hyperfine state
+            (excluding m_F degeneracy).
+        quanta_dict (dict[float, dict[str, list[tuple]]]):
+            Dominant basis quantum numbers including m_F for each (F, sym) block.
+        quanta (np.ndarray):
+            Flattened array of state quantum numbers across all F, symmetries, and m_F.
     """
 
     f_list: list[float]
