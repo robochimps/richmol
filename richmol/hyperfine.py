@@ -107,6 +107,12 @@ class HyperStates:
             For non-quadrupolar nuclei, set the corresponding entry to `None`.
             Each EFG tensor must be in atomic units.
             Defaults to an empty list, meaning quadrupole interactions are excluded.
+
+        spinrot_op (list[CartTensor | None], optional):
+            List of spin-rotation tensors corresponding to each spin operator in `spin_op`.
+            For nuclei with zero or neglected spin-rotation, set the corresponding entry to `None`.
+            Each spin-rotation tensor must be in kHz units.
+            Defaults to an empty list, meaning spin-rotation interactions are excluded.
     """
 
     f_list: list[float]
@@ -157,7 +163,7 @@ class HyperStates:
 
         # Check input for quadrupole
 
-        quad_op_ind = []  # elements of `spin_op` and `efg_op` for quadrupole coupling
+        quad_op_ind = []  # indices of `efg_op` != None
 
         if len(efg_op) > 0:
             if len(efg_op) != len(spin_op):
@@ -165,6 +171,8 @@ class HyperStates:
                     f"'efg_op' and 'spin_op' must have the same number of elements,"
                     f"len(efg_op) = {len(efg_op)}, len(spin_op) = {len(spin_op)}"
                 )
+
+            quad_op_q = []
 
             for i, efg in enumerate(efg_op):
                 if efg is not None:
@@ -181,11 +189,14 @@ class HyperStates:
                             + f"expected: {Rank2Tensor.spher_ind}"
                         ) from None
 
+                    quad_op_q.append(spin_op[i])
                     quad_op_ind.append(i)
+                else:
+                    quad_op_q.append(QuadMom(spin=spin_op[i].spin, Q=0.0))
 
         # Check input for spin-rotation
 
-        spinrot_op_ind = []  # match elements of `spin_op` and `spinrot_op`
+        spinrot_op_ind = []  # indices of `spinrot_op` != None
 
         if len(spinrot_op) > 0:
             if len(spinrot_op) != len(spin_op):
@@ -197,24 +208,24 @@ class HyperStates:
             spin_op_sr = []
 
             for i, spinrot in enumerate(spinrot_op):
-                if spinrot is not None:
-                    if hasattr(spin_op[i], "Q"):
-                        # this means that spin operator in `spin_op` is quadrupole, `QuadMom`,
-                        # that computes reduced matrix elements for nuclear quadrupole operator
-                        # <I'||Q(n)||I>, so need to initialize from it a spin operator, `Spin`,
-                        # in order to have correct reduced matrix elements <I'||I(n)||I>
-                        # for spin-rotation interaction
-                        spin_op_i = Spin(spin=spin_op[i].spin)
-                    else:
-                        spin_op_i = spin_op[i]
+                if hasattr(spin_op[i], "Q"):
+                    # this means that spin operator in `spin_op` is quadrupole operator, `QuadMom`,
+                    # which contains reduced matrix elements for nuclear quadrupole <I'||Q(n)||I>,
+                    # so we need to initialize from it a pure spin operator, `Spin`, in order
+                    # to have correct reduced matrix elements <I'||I(n)||I> for spin-rotation interaction
+                    spin_op_i = Spin(spin=spin_op[i].spin)
+                else:
+                    spin_op_i = spin_op[i]
 
+                spin_op_sr.append(spin_op_i)
+
+                if spinrot is not None:
                     if not spinrot.spher_ind == Rank2Tensor().spher_ind:
                         raise ValueError(
                             f"Spin-rotation tensor in 'spinrot_op[{i}]' has invalid attribute 'spher_ind': {spinrot.spher_ind}, "
                             + f"expected: {Rank2Tensor.spher_ind}"
                         ) from None
 
-                    spin_op_sr.append(spin_op_i)
                     spinrot_op_ind.append(i)
 
         # generate combinations of rovibrational and spin angular momentum quantum numbers
@@ -313,8 +324,8 @@ class HyperStates:
                         + _quadrupole_me(
                             f,
                             self.j_spin_list[f][sym],
-                            [spin_op[i] for i in quad_op_ind],
-                            [efg_op[i] for i in quad_op_ind],
+                            quad_op_q,
+                            efg_op,
                         ).toarray()
                         * QUAD_UNIT_FAC[states.enr_units]
                     )
@@ -329,7 +340,7 @@ class HyperStates:
                             f,
                             self.j_spin_list[f][sym],
                             spin_op_sr,
-                            [spinrot_op[i] for i in spinrot_op_ind],
+                            spinrot_op,
                         ).toarray()
                         * SPINROT_UNIT_FAC[states.enr_units]
                     )
@@ -784,7 +795,7 @@ def _quadrupole_me(
     f_val: float,
     j_spin_list: list[tuple[int, tuple[float], str, str, int]],
     quad_op: list[SpinOperator],
-    efg_op: list[CartTensor],
+    efg_op: list[CartTensor | None],
 ):
     spin_list = [spin for (_, spin, *_) in j_spin_list]
 
@@ -806,6 +817,8 @@ def _quadrupole_me(
 
             me = 0
             for efg, q in zip(efg_op, quad):
+                if efg is None:
+                    continue
                 try:
                     kmat = efg.kmat[(j1, j2)][(j_sym1, j_sym2)][2]  # for omega = 2
                 except KeyError:
@@ -846,7 +859,7 @@ def _spinrot_me(
     f_val: float,
     j_spin_list: list[tuple[int, tuple[float], str, str, int]],
     spin_op: list[SpinOperator],
-    spinrot_tens: list[CartTensor],
+    spinrot_tens: list[CartTensor | None],
     zero_tol: float = 1e-12,
 ):
     norm_const = (1, -np.sqrt(3), np.sqrt(5))
@@ -908,6 +921,8 @@ def _spinrot_me(
                 # sum over nuclei: \sum_n M(n) * <I'||I(n)||I>
                 me = 0
                 for spinrot_me, spin_me in zip(spinrot_tens, red_spin_me):
+                    if spinrot_me is None:
+                        continue
                     try:
                         kmat = spinrot_me.kmat[(j1, j2)][(j_sym1, j_sym2)][omega]
                     except KeyError:
