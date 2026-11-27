@@ -277,15 +277,22 @@ class CartTensorMS(MKTensorMS):
         self,
         states1: RotStates,
         states2: RotStates,
-        tens: np.ndarray | list | tuple | str,
+        tens: np.ndarray | list | tuple,
         vib: bool = False,
         thresh: float = 1e-12,
     ):
-        mol_tens = None
         tens_name = ""
 
         if isinstance(tens, str):
-            tens_name = tens
+            # operators like cos(beta) or cos^2(beta) act only on rotational coordinates,
+            # their matrix elements require the overlap <el1,v'|el2,v> of vibronic functions
+            # of bra and ket states, which is unknown here
+            raise ValueError(
+                f"Operators defined by name, such as '{tens}', are not supported by CartTensorMS: "
+                "their matrix elements depend on the overlap of bra and ket vibronic functions, "
+                "which is zero for orthogonal electronic states. Use CartTensor for states "
+                "of the same electronic state"
+            )
         elif isinstance(tens, (np.ndarray, list, tuple)):
             mol_tens = tens
         else:
@@ -293,34 +300,6 @@ class CartTensorMS(MKTensorMS):
                 f"Invalid type for 'tens': expected a list/tuple/numpy array "
                 f"(molecular-frame tensor values), but got {type(tens).__name__}."
             )
-
-        # special case for matrix elements of functions like cos(beta) or cos^2(beta)
-        #   for which `mol_tens` = None
-
-        if mol_tens is None:
-            print(
-                f"WARNING: CartTensorMS matrix elements are not tested for operator '{tens_name}'"
-            )
-            if vib:
-                nvib1 = np.max(
-                    [
-                        np.max(v_sym) + 1
-                        for v_j in states1.v_ind.values()
-                        for v_sym in v_j.values()
-                    ]
-                )
-                nvib2 = np.max(
-                    [
-                        np.max(v_sym) + 1
-                        for v_j in states2.v_ind.values()
-                        for v_sym in v_j.values()
-                    ]
-                )
-                mol_tens = np.zeros((nvib1, nvib2, 3))
-                nvib = min(nvib1, nvib2)
-                mol_tens[:nvib, :nvib, 0] = np.eye(nvib)
-            else:
-                mol_tens = np.array([1, 0, 0])
 
         if not isinstance(mol_tens, np.ndarray):
             mol_tens = np.array(mol_tens)
