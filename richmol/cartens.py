@@ -16,6 +16,20 @@ _TENSORS: dict[tuple[int, str], type] = {}
 # Default tensor name for given rank
 _DEFAULT_NAME = {1: "cartesian", 2: "cartesian(full)", 3: "cartesian(full)"}
 
+# Three-j symbols contracted with Cartesian-to-spherical tensor transformation,
+# below this value, are considered zero by selection rules in `CartTensor._k_tens`.
+_THREEJ_ZERO_TOL = 1e-14
+
+
+def _group_by_value(ind: np.ndarray) -> dict[int, np.ndarray]:
+    """Groups positions of elements in `ind` by their value,
+    i.e., returns {value: positions of `value` in `ind`}
+    """
+    ind = np.asarray(ind)
+    order = np.argsort(ind, kind="stable")
+    values, start = np.unique(ind[order], return_index=True)
+    return dict(zip(values.tolist(), np.split(order, start[1:])))
+
 
 def register(cls):
     rank = cls.rank
@@ -1241,6 +1255,13 @@ class CartTensor(MKTensor):
             - \alpha = x, y, z for \Omega=1, xx, xy, xz, yx, yy, ... zz for \Omega=2
             - U is Cartesian-to-spherical tensor transformation matrix
             - T_{\alpha} are elements of tensor in molecular frame
+
+        Selection rules are inferred from the non-zero elements (> _THREEJ_ZERO_TOL)
+        of the three-j symbols contracted with U, computed by `_threej_umat_cart_to_spher`:
+            - Delta J: pairs J', J and ranks \omega with all-zero elements are skipped
+            - Delta k: only pairs of basis functions with coupled rotational functions
+            (k',\tau') and (k,\tau) are included in the sum
+            - Cartesian components \alpha with all-zero elements are excluded
         """
         # flatten molecular-frame tensor matrix elements such that the order
         # of Cartesian indices matches that in `self.cart_ind`
@@ -1267,6 +1288,15 @@ class CartTensor(MKTensor):
                 f"Flattening molecular-frame tensor of rank = {self.rank} is not implemented"
             )
 
+        # basis functions of each J and symmetry grouped by rotational function,
+        #   rot_blocks[j][sym][r] = indices of basis functions with r_ind = r
+        rot_blocks = {
+            j: {
+                sym: _group_by_value(states.r_ind[j][sym]) for sym in states.sym_list[j]
+            }
+            for j in states.j_list
+        }
+
         k_me = {}
 
         for j1 in states.j_list:
@@ -1275,43 +1305,86 @@ class CartTensor(MKTensor):
                     j1, j2, states.linear
                 )
 
+                # selection rules from non-zero elements of `threej_u`
+
+                nonzero = {
+                    omega: np.abs(tu) > _THREEJ_ZERO_TOL
+                    for omega, tu in threej_u.items()
+                }
+
+                # Delta J: omega = |j1-j2|..j1+j2
+                omega_list = [omega for omega, nz in nonzero.items() if np.any(nz)]
+                if not omega_list:
+                    continue
+
+                # Cartesian components
+                cart = np.flatnonzero(
+                    np.any(
+                        [np.any(nonzero[o], axis=(0, 1)) for o in omega_list], axis=0
+                    )
+                )
+
+                # Delta k: pairs of coupled rotational functions (k',tau') and (k,tau)
+                rot_pairs = np.any(
+                    [np.any(nonzero[o], axis=-1) for o in omega_list], axis=0
+                )
+
+                threej_u = {o: threej_u[o][:, :, cart] for o in omega_list}
+
                 k_me_sym = {}
 
                 for sym1 in states.sym_list[j1]:
                     vec1 = states.vec[j1][sym1]
-                    v_ind1 = states.v_ind[j1][sym1]
-                    r_ind1 = states.r_ind[j1][sym1]
+                    v_ind1 = np.asarray(states.v_ind[j1][sym1])
+                    blocks1 = rot_blocks[j1][sym1]
 
                     for sym2 in states.sym_list[j2]:
                         vec2 = states.vec[j2][sym2]
-                        v_ind2 = states.v_ind[j2][sym2]
-                        r_ind2 = states.r_ind[j2][sym2]
+                        v_ind2 = np.asarray(states.v_ind[j2][sym2])
+                        r_ind2 = np.asarray(states.r_ind[j2][sym2])
+                        blocks2 = rot_blocks[j2][sym2]
 
-                        vib_me = mol_tens[np.ix_(v_ind1, v_ind2)]
-
-                        k_me_omega = {}
-
-                        for omega in threej_u.keys():
-                            me = np.einsum(
-                                "ijc,ijc->ij",
-                                vib_me,
-                                threej_u[omega][np.ix_(r_ind1, r_ind2)],
-                                optimize="optimal",
+                        k_me_omega = {
+                            o: np.zeros(
+                                (vec1.shape[1], vec2.shape[1]),
+                                dtype=np.result_type(vec1, vec2, threej_u[o]),
                             )
+                            for o in omega_list
+                        }
 
-                            if np.any(np.abs(me) > thresh):
+                        # loop over bra rotational functions and contract with
+                        # basis functions of coupled ket rotational functions only
+                        for r1, ind1 in blocks1.items():
+                            ind2 = [
+                                blocks2[r2]
+                                for r2 in np.flatnonzero(rot_pairs[r1])
+                                if r2 in blocks2
+                            ]
+                            if not ind2:
+                                continue
+                            ind2 = np.concatenate(ind2)
+
+                            vib_me = mol_tens[np.ix_(v_ind1[ind1], v_ind2[ind2], cart)]
+                            vec1_conj = np.conj(vec1[ind1]).T
+                            vec2_ = vec2[ind2]
+
+                            for omega in omega_list:
                                 me = np.einsum(
-                                    "ik,ij,jl->kl",
-                                    np.conj(vec1),
-                                    me,
-                                    vec2,
-                                    optimize="optimal",
+                                    "ijc,jc->ij",
+                                    vib_me,
+                                    threej_u[omega][r1, r_ind2[ind2]],
                                 )
 
-                                me[np.abs(me) < thresh] = 0
-                                me = csr_array(me)
-                                if me.nnz > 0:
-                                    k_me_omega[omega] = me
+                                k_me_omega[omega] += np.linalg.multi_dot(
+                                    [vec1_conj, me, vec2_]
+                                )
+
+                        for omega in omega_list:
+                            me = k_me_omega.pop(omega)
+                            me[np.abs(me) < thresh] = 0
+                            me = csr_array(me)
+                            if me.nnz > 0:
+                                k_me_omega[omega] = me
 
                         if k_me_omega:
                             k_me_sym[(sym1, sym2)] = k_me_omega
